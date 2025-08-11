@@ -6,7 +6,8 @@ A desktop application with a Fooly Cooly theme that automatically organizes file
 
 ### ✨ Final Application Demonstration
 
-![Imgur](https://i.imgur.com/d1dYKGV.gif)
+![demo](demo.gif)
+
 ---
 
 ### 🚀 Key Features
