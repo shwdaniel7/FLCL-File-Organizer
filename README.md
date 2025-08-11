@@ -6,9 +6,7 @@ A desktop application with a Fooly Cooly theme that automatically organizes file
 
 ### ✨ Final Application Demonstration
 
-*(Tire um screenshot da sua aplicação rodando via `python app.py`, com o ícone da janela funcionando, e coloque aqui!)*
-
-![App Gif](https://i.imgur.com/d1dYKGV.gif) 
+![](https://i.imgur.com/d1dYKGV.gif) 
 
 ---
 
