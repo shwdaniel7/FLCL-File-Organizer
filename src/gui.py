@@ -166,6 +166,8 @@ class AppGUI:
         if not os.path.isdir(directory):
             messagebox.showerror("ATOMIC ERROR", "The selected directory is not valid, baka!")
             return
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            return
 
         self.start_button.configure(state='disabled')
         self.select_button.configure(state='disabled')
@@ -176,9 +178,23 @@ class AppGUI:
         self.monitor_thread.start()
 
     def stop_action(self):
+        if not self.monitor_thread or not self.monitor_thread.is_alive():
+            self._finish_stop()
+            return
+
+        self.stop_event.set()
+        self.start_button.configure(state='disabled')
+        self.select_button.configure(state='disabled')
+        self.stop_button.configure(state='disabled', text='STOPPING...')
+        self.root.after(100, self._wait_for_monitoring_stop)
+
+    def _wait_for_monitoring_stop(self):
         if self.monitor_thread and self.monitor_thread.is_alive():
-            self.stop_event.set()
-        
+            self.root.after(100, self._wait_for_monitoring_stop)
+            return
+        self._finish_stop()
+
+    def _finish_stop(self):
         self.start_button.configure(state='normal')
         self.select_button.configure(state='normal')
-        self.stop_button.configure(state='disabled')
+        self.stop_button.configure(state='disabled', text='STOP')
