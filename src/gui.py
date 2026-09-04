@@ -7,7 +7,7 @@ import queue
 import os
 import sys
 from PIL import Image
-from .organizer import start_monitoring
+from .organizer import build_preview, has_history, start_monitoring, undo_last_run
 
 def resource_path(relative_path):
     """Return a path to a bundled resource in source and PyInstaller modes."""
@@ -38,6 +38,8 @@ class AppGUI:
         self.monitor_thread = None
         self.stop_event = threading.Event()
         self.log_queue = queue.Queue()
+        self.preview_plan = []
+        self.undo_thread = None
         self.gif_frames = []
         self.gif_duration = 100
         self.gif_label = None
@@ -61,7 +63,8 @@ class AppGUI:
         # --- Right Frame (Controls) ---
         right_frame = customtkinter.CTkFrame(self.root, fg_color="transparent")
         right_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 20), pady=20)
-        right_frame.grid_rowconfigure(2, weight=1)
+        right_frame.grid_rowconfigure(2, weight=3)
+        right_frame.grid_rowconfigure(3, weight=1)
 
         # --- Widgets ---
         folder_label = customtkinter.CTkLabel(right_frame, text="FOLDER TO ORGANIZE:", font=self.main_font, text_color=COLOR_TEXT_WHITE)
@@ -73,14 +76,20 @@ class AppGUI:
         self.select_button = customtkinter.CTkButton(right_frame, text="Select...", command=self.select_folder, font=self.main_font)
         self.select_button.grid(row=1, column=1, sticky="ew")
 
-        self.log_box = customtkinter.CTkTextbox(right_frame, state='disabled', font=self.log_font, wrap="word", fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, text_color=COLOR_YELLOW)
-        self.log_box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(20, 10))
+        self.preview_box = customtkinter.CTkTextbox(right_frame, state='disabled', font=self.log_font, wrap="word", fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, text_color=COLOR_TEXT_WHITE)
+        self.preview_box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(20, 10))
 
-        self.start_button = customtkinter.CTkButton(right_frame, text="START SWING", command=self.start_action, state='disabled', font=self.main_font, fg_color=COLOR_PINK, hover_color="#C42A7A")
-        self.start_button.grid(row=3, column=0, sticky="ew", padx=(0, 10))
+        self.log_box = customtkinter.CTkTextbox(right_frame, state='disabled', font=self.log_font, wrap="word", fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, text_color=COLOR_YELLOW)
+        self.log_box.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+
+        self.start_button = customtkinter.CTkButton(right_frame, text="ORGANIZE", command=self.start_action, state='disabled', font=self.main_font, fg_color=COLOR_PINK, hover_color="#C42A7A")
+        self.start_button.grid(row=4, column=0, sticky="ew", padx=(0, 10))
 
         self.stop_button = customtkinter.CTkButton(right_frame, text="STOP", command=self.stop_action, state='disabled', font=self.main_font)
-        self.stop_button.grid(row=3, column=1, sticky="ew")
+        self.stop_button.grid(row=4, column=1, sticky="ew")
+
+        self.undo_button = customtkinter.CTkButton(right_frame, text="UNDO LAST RUN", command=self.undo_action, state='disabled', font=self.main_font)
+        self.undo_button.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         
         # --- Initial State ---
         if self.gif_frames:
@@ -158,13 +167,58 @@ class AppGUI:
         directory = filedialog.askdirectory()
         if directory:
             self.directory_path.set(directory)
+            try:
+                self.preview_plan = build_preview(directory)
+            except (OSError, ValueError) as error:
+                self.preview_plan = []
+                self._set_preview(f"Unable to preview folder:\n{error}")
+                self.start_button.configure(state='disabled')
+                messagebox.showerror("PREVIEW ERROR", f"Could not scan the selected folder.\n{error}")
+                return
+
+            self._show_preview(directory)
             self.start_button.configure(state='normal')
             self.log(f"FOLDER SELECTED: {directory}")
+
+    def _set_preview(self, content):
+        self.preview_box.configure(state='normal')
+        self.preview_box.delete("1.0", "end")
+        self.preview_box.insert("end", content)
+        self.preview_box.configure(state='disabled')
+
+    def _show_preview(self, directory):
+        move_items = [item for item in self.preview_plan if item["status"] == "move"]
+        no_rule_items = [item for item in move_items if not item["has_rule"]]
+        conflict_items = [item for item in move_items if item["conflict"]]
+        ignored_items = [item for item in self.preview_plan if item["status"] == "ignored"]
+
+        lines = [
+            f"PREVIEW: {len(self.preview_plan)} file(s) found",
+            f"Files to organize: {len(move_items)}",
+            f"Without matching rule: {len(no_rule_items)}",
+            f"Name conflicts: {len(conflict_items)}",
+            f"Ignored (no extension): {len(ignored_items)}",
+            "",
+            "DESTINATION PLAN:",
+        ]
+        for item in move_items:
+            relative_destination = os.path.relpath(item["destination_path"], directory)
+            flags = []
+            if not item["has_rule"]:
+                flags.append("NO RULE")
+            if item["conflict"]:
+                flags.append("RENAME")
+            suffix = f" [{', '.join(flags)}]" if flags else ""
+            lines.append(f"{item['filename']} -> {relative_destination}{suffix}")
+
+        self._set_preview("\n".join(lines))
 
     def start_action(self):
         directory = self.directory_path.get()
         if not os.path.isdir(directory):
             messagebox.showerror("ATOMIC ERROR", "The selected directory is not valid, baka!")
+            return
+        if self.monitor_thread and self.monitor_thread.is_alive():
             return
 
         self.start_button.configure(state='disabled')
@@ -176,9 +230,48 @@ class AppGUI:
         self.monitor_thread.start()
 
     def stop_action(self):
+        if not self.monitor_thread or not self.monitor_thread.is_alive():
+            self._finish_stop()
+            return
+
+        self.stop_event.set()
+        self.start_button.configure(state='disabled')
+        self.select_button.configure(state='disabled')
+        self.stop_button.configure(state='disabled', text='STOPPING...')
+        self.root.after(100, self._wait_for_monitoring_stop)
+
+    def _wait_for_monitoring_stop(self):
         if self.monitor_thread and self.monitor_thread.is_alive():
-            self.stop_event.set()
-        
+            self.root.after(100, self._wait_for_monitoring_stop)
+            return
+        self._finish_stop()
+
+    def _finish_stop(self):
         self.start_button.configure(state='normal')
+        self.undo_button.configure(state='normal' if has_history() else 'disabled')
         self.select_button.configure(state='normal')
-        self.stop_button.configure(state='disabled')
+        self.stop_button.configure(state='disabled', text='STOP')
+
+    def undo_action(self):
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            messagebox.showwarning("MONITORING ACTIVE", "Stop monitoring before undoing the last run.")
+            return
+        if self.undo_thread and self.undo_thread.is_alive():
+            return
+        self.undo_button.configure(state='disabled')
+        self.undo_thread = threading.Thread(target=undo_last_run, args=(self._queue_log,), daemon=True)
+        self.undo_thread.start()
+        self.root.after(100, self._finish_undo)
+
+    def _finish_undo(self):
+        if self.undo_thread and self.undo_thread.is_alive():
+            self.root.after(100, self._finish_undo)
+            return
+        self.undo_button.configure(state='normal' if has_history() else 'disabled')
+        directory = self.directory_path.get()
+        if os.path.isdir(directory):
+            try:
+                self.preview_plan = build_preview(directory)
+                self._show_preview(directory)
+            except OSError:
+                pass

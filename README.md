@@ -15,6 +15,7 @@ A desktop application with a Fooly Cooly theme that automatically organizes file
 - **Themed GUI:** A stylish and responsive dark-mode interface inspired by the anime FLCL, featuring an animated GIF.
 - **Real-Time Monitoring:** Uses `watchdog` to instantly detect and organize new files.
 - **Initial Scan:** Organizes all existing files in the folder when monitoring starts.
+- **Preview and Undo:** Preview planned destinations before organizing and restore the last organization run when needed.
 - **Customizable Rules:** Easily configure which file extensions go into which folders by editing the `config.json` file.
 - **Standalone Executable:** Packaged with PyInstaller, allowing anyone to run the app without installing Python or any dependencies.
 - **Custom Icon & Font:** For a complete and polished look.
