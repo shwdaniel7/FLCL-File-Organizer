@@ -16,6 +16,60 @@ def resource_path(relative_path):
         base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
 
+def _get_file_extension(filename, rules):
+    """Find the longest configured suffix, including compound extensions."""
+    lowered_filename = filename.lower()
+    configured_extensions = {
+        extension.lower()
+        for extensions in rules.values()
+        for extension in extensions
+    }
+    matching_extensions = [
+        extension for extension in configured_extensions
+        if lowered_filename.endswith(extension)
+    ]
+    if matching_extensions:
+        return max(matching_extensions, key=len)
+    return os.path.splitext(filename)[1].lower()
+
+def _wait_for_stable_file(file_path, checks=3, interval=0.5, timeout=30):
+    """Wait until a file keeps the same size across consecutive checks."""
+    deadline = time.monotonic() + timeout
+    previous_size = None
+    stable_checks = 0
+
+    while time.monotonic() < deadline:
+        try:
+            current_size = os.path.getsize(file_path)
+        except OSError:
+            return False
+
+        if current_size == previous_size:
+            stable_checks += 1
+            if stable_checks >= checks:
+                return True
+        else:
+            previous_size = current_size
+            stable_checks = 0
+        time.sleep(interval)
+
+    return False
+
+def _unique_destination_path(destination_path):
+    """Return a non-conflicting path using the `name (n).ext` convention."""
+    if not os.path.exists(destination_path):
+        return destination_path
+
+    directory = os.path.dirname(destination_path)
+    filename = os.path.basename(destination_path)
+    stem, extension = os.path.splitext(filename)
+    counter = 1
+    while True:
+        candidate = os.path.join(directory, f"{stem} ({counter}){extension}")
+        if not os.path.exists(candidate):
+            return candidate
+        counter += 1
+
 def _process_and_move_file(file_path, monitored_dir, rules, log_callback):
     """
     Core logic to organize a single file based on the rules from config.json.
@@ -24,13 +78,13 @@ def _process_and_move_file(file_path, monitored_dir, rules, log_callback):
         if not os.path.exists(file_path):
             return
 
-        filename, extension = os.path.splitext(os.path.basename(file_path))
-        extension = extension.lower()
+        filename = os.path.basename(file_path)
+        extension = _get_file_extension(filename, rules)
 
         if not extension or filename.startswith('.') or filename.startswith('~'):
             return
 
-        destination_folder_name = "Other"
+        destination_folder_name = "Others"
         for folder, extensions in rules.items():
             if extension in extensions:
                 destination_folder_name = folder
@@ -45,10 +99,10 @@ def _process_and_move_file(file_path, monitored_dir, rules, log_callback):
             os.makedirs(destination_path)
             log_callback(f"Folder created: {destination_folder_name}")
         
-        final_destination_path = os.path.join(destination_path, os.path.basename(file_path))
+        final_destination_path = _unique_destination_path(os.path.join(destination_path, filename))
         
         shutil.move(file_path, final_destination_path)
-        log_callback(f"File moved: '{os.path.basename(file_path)}' -> '{destination_folder_name}'")
+        log_callback(f"File moved: '{filename}' -> '{os.path.basename(final_destination_path)}' in '{destination_folder_name}'")
 
     except Exception as e:
         log_callback(f"ERROR organizing {os.path.basename(file_path)}: {e}")
@@ -66,9 +120,12 @@ class OrganizerEventHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         
-        self.log(f"New file detected: {os.path.basename(event.src_path)}")
-        time.sleep(1) # Wait to ensure the file is fully written
-        _process_and_move_file(event.src_path, self.monitored_dir, self.rules, self.log)
+        filename = os.path.basename(event.src_path)
+        self.log(f"New file detected: {filename}")
+        if _wait_for_stable_file(event.src_path):
+            _process_and_move_file(event.src_path, self.monitored_dir, self.rules, self.log)
+        else:
+            self.log(f"ERROR: Timed out waiting for '{filename}' to finish copying")
 
 def run_initial_scan(monitored_dir, rules, log_callback):
     """
