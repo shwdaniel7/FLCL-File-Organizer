@@ -16,7 +16,7 @@ A desktop application with a Fooly Cooly theme that automatically organizes file
 - **Real-Time Monitoring:** Uses `watchdog` to instantly detect and organize new files.
 - **Initial Scan:** Organizes all existing files in the folder when monitoring starts.
 - **Preview and Undo:** Preview planned destinations before organizing and restore the last organization run when needed.
-- **Customizable Rules:** Easily configure which file extensions go into which folders by editing the `config.json` file.
+- **Rules and Filters Editor:** Create categories, assign extensions and destination folders, configure exclusions, and import/export JSON settings.
 - **Standalone Executable:** Packaged with PyInstaller, allowing anyone to run the app without installing Python or any dependencies.
 - **Custom Icon & Font:** For a complete and polished look.
 

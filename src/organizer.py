@@ -5,6 +5,7 @@ import json
 import time
 import shutil
 import sys
+import fnmatch
 from datetime import datetime, timezone
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -21,6 +22,10 @@ def history_path():
     """Return the persistent per-user path for organization history."""
     data_dir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.flcl-file-organizer")
     return os.path.join(data_dir, "FLCL-File-Organizer", "history.json")
+
+def user_config_path():
+    data_dir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.flcl-file-organizer")
+    return os.path.join(data_dir, "FLCL-File-Organizer", "config.json")
 
 def _load_history():
     try:
@@ -110,6 +115,49 @@ def _get_file_extension(filename, rules):
         return max(matching_extensions, key=len)
     return os.path.splitext(filename)[1].lower()
 
+def _default_settings():
+    return {
+        "rules": {},
+        "filters": {
+            "ignored_folders": [],
+            "ignore_hidden": True,
+            "min_size_kb": 0,
+            "ignored_extensions": [],
+            "ignored_patterns": [],
+        },
+    }
+
+def _normalize_settings(raw_settings):
+    settings = _default_settings()
+    if "rules" in raw_settings:
+        settings["rules"] = raw_settings.get("rules", {})
+        settings["filters"].update(raw_settings.get("filters", {}))
+    else:
+        settings["rules"] = raw_settings
+    return settings
+
+def load_settings():
+    """Load user settings, falling back to the bundled legacy config."""
+    config_file = user_config_path()
+    if not os.path.isfile(config_file):
+        config_file = resource_path("config.json")
+    return load_settings_from_file(config_file)
+
+def load_settings_from_file(config_file):
+    with open(config_file, "r", encoding="utf-8") as config_handle:
+        settings = json.load(config_handle)
+    if not isinstance(settings, dict):
+        raise ValueError("Configuration must be a JSON object.")
+    return _normalize_settings(settings)
+
+def save_settings(settings, destination=None):
+    config_file = destination or user_config_path()
+    parent_directory = os.path.dirname(config_file)
+    if parent_directory:
+        os.makedirs(parent_directory, exist_ok=True)
+    with open(config_file, "w", encoding="utf-8") as config_handle:
+        json.dump(_normalize_settings(settings), config_handle, indent=2)
+
 def _wait_for_stable_file(file_path, checks=3, interval=0.5, timeout=30):
     """Wait until a file keeps the same size across consecutive checks."""
     deadline = time.monotonic() + timeout
@@ -150,9 +198,7 @@ def _unique_destination_path(destination_path):
 
 def load_rules():
     """Load organization rules from the application resources."""
-    config_path = resource_path("config.json")
-    with open(config_path, "r", encoding="utf-8") as config_file:
-        return json.load(config_file)
+    return load_settings()["rules"]
 
 def _classify_file(filename, rules):
     extension = _get_file_extension(filename, rules)
@@ -165,16 +211,37 @@ def _classify_file(filename, rules):
             return folder, extension, True
     return "Others", extension, False
 
-def build_preview(monitored_dir, rules=None):
+def _filter_reason(filename, file_path, filters):
+    if filters.get("ignore_hidden", True) and filename.startswith('.'):
+        return "Hidden file"
+    ignored_extensions = {item.lower() for item in filters.get("ignored_extensions", [])}
+    if os.path.splitext(filename)[1].lower() in ignored_extensions:
+        return "Ignored extension"
+    if any(fnmatch.fnmatch(filename, pattern) for pattern in filters.get("ignored_patterns", [])):
+        return "Ignored pattern"
+    min_size_kb = float(filters.get("min_size_kb", 0) or 0)
+    if min_size_kb > 0 and os.path.getsize(file_path) < min_size_kb * 1024:
+        return "Below minimum size"
+    return None
+
+def build_preview(monitored_dir, rules=None, filters=None):
     """Build a move plan without changing any files on disk."""
-    rules = rules or load_rules()
+    if rules is None:
+        settings = load_settings()
+        rules = settings["rules"]
+        filters = settings["filters"]
+    filters = filters or _default_settings()["filters"]
     preview = []
 
     for item_name in sorted(os.listdir(monitored_dir), key=str.lower):
         source_path = os.path.join(monitored_dir, item_name)
         if not os.path.isfile(source_path):
             continue
-        if item_name.startswith('.') or item_name.startswith('~'):
+        if item_name.startswith('~'):
+            continue
+        reason = _filter_reason(item_name, source_path, filters)
+        if reason:
+            preview.append({"filename": item_name, "status": "ignored", "reason": reason})
             continue
 
         destination_folder, extension, has_rule = _classify_file(item_name, rules)
@@ -200,7 +267,7 @@ def build_preview(monitored_dir, rules=None):
 
     return preview
 
-def _process_and_move_file(file_path, monitored_dir, rules, log_callback):
+def _process_and_move_file(file_path, monitored_dir, rules, log_callback, filters=None):
     """
     Core logic to organize a single file based on the rules from config.json.
     """
@@ -209,6 +276,9 @@ def _process_and_move_file(file_path, monitored_dir, rules, log_callback):
             return
 
         filename = os.path.basename(file_path)
+        reason = _filter_reason(filename, file_path, filters or _default_settings()["filters"])
+        if reason:
+            return None
         destination_folder_name, extension, _ = _classify_file(filename, rules)
 
         if not destination_folder_name or filename.startswith('.') or filename.startswith('~'):
@@ -241,10 +311,11 @@ class OrganizerEventHandler(FileSystemEventHandler):
     """
     Handles file system events detected by Watchdog.
     """
-    def __init__(self, monitored_dir, rules, log_callback):
+    def __init__(self, monitored_dir, rules, log_callback, filters=None):
         self.monitored_dir = monitored_dir
         self.rules = rules
         self.log = log_callback
+        self.filters = filters or _default_settings()["filters"]
 
     def on_created(self, event):
         if event.is_directory:
@@ -253,13 +324,13 @@ class OrganizerEventHandler(FileSystemEventHandler):
         filename = os.path.basename(event.src_path)
         self.log(f"New file detected: {filename}")
         if _wait_for_stable_file(event.src_path):
-            move = _process_and_move_file(event.src_path, self.monitored_dir, self.rules, self.log)
+            move = _process_and_move_file(event.src_path, self.monitored_dir, self.rules, self.log, self.filters)
             if move:
                 _append_to_last_run(move)
         else:
             self.log(f"ERROR: Timed out waiting for '{filename}' to finish copying")
 
-def run_initial_scan(monitored_dir, rules, log_callback):
+def run_initial_scan(monitored_dir, rules, log_callback, filters=None):
     """
     Scans the monitored folder and organizes all existing files.
     """
@@ -270,7 +341,7 @@ def run_initial_scan(monitored_dir, rules, log_callback):
         full_path = os.path.join(monitored_dir, item_name)
         if os.path.isfile(full_path):
             found_files += 1
-            move = _process_and_move_file(full_path, monitored_dir, rules, log_callback)
+            move = _process_and_move_file(full_path, monitored_dir, rules, log_callback, filters)
             if move:
                 moves.append(move)
     
@@ -284,12 +355,14 @@ def start_monitoring(directory, stop_event, log_callback):
     """
     Main function for the monitoring thread. Runs the initial scan, then starts the observer.
     """
-    rules = load_rules()
+    settings = load_settings()
+    rules = settings["rules"]
+    filters = settings["filters"]
     
-    moves = run_initial_scan(directory, rules, log_callback)
+    moves = run_initial_scan(directory, rules, log_callback, filters)
     _record_run(moves)
 
-    event_handler = OrganizerEventHandler(directory, rules, log_callback)
+    event_handler = OrganizerEventHandler(directory, rules, log_callback, filters)
     observer = Observer()
     observer.schedule(event_handler, directory, recursive=False)
     observer.start()
