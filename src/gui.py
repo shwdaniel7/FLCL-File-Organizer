@@ -3,18 +3,18 @@
 import customtkinter
 from tkinter import filedialog, messagebox
 import threading
+import queue
 import os
 import sys
 from PIL import Image
 from .organizer import start_monitoring
 
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
+    """Return a path to a bundled resource in source and PyInstaller modes."""
     try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
+    except AttributeError:
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
 
 customtkinter.set_appearance_mode("dark")
@@ -37,6 +37,7 @@ class AppGUI:
         self.directory_path = customtkinter.StringVar()
         self.monitor_thread = None
         self.stop_event = threading.Event()
+        self.log_queue = queue.Queue()
         self.gif_frames = []
         self.gif_duration = 100
         self.gif_label = None
@@ -84,6 +85,7 @@ class AppGUI:
         # --- Initial State ---
         if self.gif_frames:
             self._animate_gif(0)
+        self.root.after(100, self._process_log_queue)
         self.log("WELCOME, SPACE-HEAD! SELECT A FOLDER TO GET STARTED.")
 
     def _setup_window_icon(self):
@@ -139,6 +141,19 @@ class AppGUI:
         self.log_box.see("end")
         self.log_box.configure(state='disabled')
 
+    def _queue_log(self, message):
+        """Queue worker messages so Tkinter is only updated on the UI thread."""
+        self.log_queue.put(message)
+
+    def _process_log_queue(self):
+        try:
+            while True:
+                self.log(self.log_queue.get_nowait())
+        except queue.Empty:
+            pass
+        finally:
+            self.root.after(100, self._process_log_queue)
+
     def select_folder(self):
         directory = filedialog.askdirectory()
         if directory:
@@ -157,7 +172,7 @@ class AppGUI:
         self.stop_button.configure(state='normal')
 
         self.stop_event.clear()
-        self.monitor_thread = threading.Thread(target=start_monitoring, args=(directory, self.stop_event, self.log), daemon=True)
+        self.monitor_thread = threading.Thread(target=start_monitoring, args=(directory, self.stop_event, self._queue_log), daemon=True)
         self.monitor_thread.start()
 
     def stop_action(self):

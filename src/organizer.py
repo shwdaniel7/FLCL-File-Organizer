@@ -4,8 +4,17 @@ import os
 import json
 import time
 import shutil
+import sys
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
+def resource_path(relative_path):
+    """Return a path to a bundled resource in source and PyInstaller modes."""
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
 
 def _process_and_move_file(file_path, monitored_dir, rules, log_callback):
     """
@@ -82,7 +91,8 @@ def start_monitoring(directory, stop_event, log_callback):
     """
     Main function for the monitoring thread. Runs the initial scan, then starts the observer.
     """
-    with open("config.json", "r") as f:
+    config_path = resource_path("config.json")
+    with open(config_path, "r", encoding="utf-8") as f:
         rules = json.load(f)
     
     run_initial_scan(directory, rules, log_callback)
