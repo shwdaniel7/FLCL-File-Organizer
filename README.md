@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="demo.gif" alt="FLCL File Organizer demonstration" width="680" />
+  <img src="demo-v2.gif" alt="FLCL File Organizer demonstration" width="680" />
 </p>
 
 <p align="center"><em>Inspired by FLCL. Designed for dependable everyday file management.</em></p>
