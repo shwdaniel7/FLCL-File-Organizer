@@ -17,6 +17,8 @@ A desktop application with a Fooly Cooly theme that automatically organizes file
 - **Initial Scan:** Organizes all existing files in the folder when monitoring starts.
 - **Preview and Undo:** Preview planned destinations before organizing and restore the last organization run when needed.
 - **Rules and Filters Editor:** Create categories, assign extensions and destination folders, configure exclusions, and import/export JSON settings.
+- **Optional Recursive Monitoring:** Include files in subfolders after an explicit confirmation.
+- **Pause and Windows Integration:** Pause monitoring, start with Windows, minimize to the system tray, receive organization notifications, and resume monitoring the last selected folder.
 - **Standalone Executable:** Packaged with PyInstaller, allowing anyone to run the app without installing Python or any dependencies.
 - **Custom Icon & Font:** For a complete and polished look.
 
