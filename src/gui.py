@@ -37,15 +37,15 @@ class AppGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("FLCL - File Logical Classifier Launcher")
-        self.root.geometry("900x680")
-        self.root.resizable(False, False)
+        self.root.geometry("1120x720")
+        self.root.minsize(960, 640)
+        self.root.resizable(True, True)
 
         # --- Instance variables ---
         self.directory_path = customtkinter.StringVar()
         self.monitor_thread = None
         self.stop_event = threading.Event()
         self.log_queue = queue.Queue()
-        self.preview_plan = []
         self.settings = load_settings()
         preferences = self.settings["preferences"]
         self.recursive_var = tk.BooleanVar(value=preferences.get("recursive", False))
@@ -53,8 +53,8 @@ class AppGUI:
         self.autostart_var = tk.BooleanVar(value=preferences.get("autostart", False))
         self.tray_var = tk.BooleanVar(value=preferences.get("minimize_to_tray", False))
         self.pause_event = threading.Event()
-        self.tray_icon = None
         self.undo_thread = None
+        self.tray_icon = None
         self.gif_frames = []
         self.gif_duration = 100
         self.gif_label = None
@@ -65,8 +65,8 @@ class AppGUI:
         self._load_gif_frames()
 
         # --- Layout Configuration ---
-        self.root.grid_columnconfigure(0, weight=1)
-        self.root.grid_columnconfigure(1, weight=2)
+        self.root.grid_columnconfigure(0, weight=1, minsize=380)
+        self.root.grid_columnconfigure(1, weight=2, minsize=520)
         self.root.grid_rowconfigure(0, weight=1)
 
         # --- Left Frame (GIF) ---
@@ -78,44 +78,44 @@ class AppGUI:
         # --- Right Frame (Controls) ---
         right_frame = customtkinter.CTkFrame(self.root, fg_color="transparent")
         right_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 20), pady=20)
+        right_frame.grid_columnconfigure(0, weight=3)
+        right_frame.grid_columnconfigure(1, weight=1, minsize=140)
         right_frame.grid_rowconfigure(2, weight=3)
         right_frame.grid_rowconfigure(3, weight=1)
+        right_frame.grid_rowconfigure(3, minsize=56)
 
         # --- Widgets ---
         folder_label = customtkinter.CTkLabel(right_frame, text="FOLDER TO ORGANIZE:", font=self.main_font, text_color=COLOR_TEXT_WHITE)
         folder_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
 
-        folder_entry = customtkinter.CTkEntry(right_frame, textvariable=self.directory_path, state='readonly', font=self.main_font, width=300, fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER)
+        folder_entry = customtkinter.CTkEntry(right_frame, textvariable=self.directory_path, state='readonly', font=self.main_font, height=42, fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER)
         folder_entry.grid(row=1, column=0, sticky="ew", padx=(0, 10))
 
-        self.select_button = customtkinter.CTkButton(right_frame, text="Select...", command=self.select_folder, font=self.main_font)
+        self.select_button = customtkinter.CTkButton(right_frame, text="Select...", command=self.select_folder, font=self.main_font, height=42)
         self.select_button.grid(row=1, column=1, sticky="ew")
 
         self.preview_box = customtkinter.CTkTextbox(right_frame, state='disabled', font=self.log_font, wrap="word", fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, text_color=COLOR_TEXT_WHITE)
         self.preview_box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(20, 10))
 
         self.log_box = customtkinter.CTkTextbox(right_frame, state='disabled', font=self.log_font, wrap="word", fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, text_color=COLOR_YELLOW)
-        self.log_box.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+        self.log_box.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(0, 12))
 
-        self.start_button = customtkinter.CTkButton(right_frame, text="ORGANIZE", command=self.start_action, state='disabled', font=self.main_font, fg_color=COLOR_PINK, hover_color="#C42A7A")
-        self.start_button.grid(row=4, column=0, sticky="ew", padx=(0, 10))
+        self.start_button = customtkinter.CTkButton(right_frame, text="START SWING", command=self.start_action, state='disabled', font=self.main_font, height=48, fg_color=COLOR_PINK, hover_color="#C42A7A")
+        self.start_button.grid(row=4, column=0, sticky="ew", padx=(0, 10), pady=(0, 8))
 
-        self.stop_button = customtkinter.CTkButton(right_frame, text="STOP", command=self.stop_action, state='disabled', font=self.main_font)
-        self.stop_button.grid(row=4, column=1, sticky="ew")
+        self.stop_button = customtkinter.CTkButton(right_frame, text="STOP", command=self.stop_action, state='disabled', font=self.main_font, height=48)
+        self.stop_button.grid(row=4, column=1, sticky="ew", pady=(0, 8))
 
-        self.pause_button = customtkinter.CTkButton(right_frame, text="PAUSE", command=self.pause_action, state='disabled', font=self.main_font)
-        self.pause_button.grid(row=5, column=0, sticky="ew", padx=(0, 10))
-
-        self.undo_button = customtkinter.CTkButton(right_frame, text="UNDO LAST RUN", command=self.undo_action, state='disabled', font=self.main_font)
-        self.undo_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-
-        self.settings_button = customtkinter.CTkButton(right_frame, text="EDIT RULES & FILTERS", command=self.open_settings, font=self.main_font)
-        self.settings_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-
+        self.pause_button = customtkinter.CTkButton(right_frame, text="PAUSE", command=self.pause_action, state='disabled', font=self.main_font, height=42)
+        self.pause_button.grid(row=5, column=0, sticky="ew", padx=(0, 10), pady=(4, 0))
+        self.undo_button = customtkinter.CTkButton(right_frame, text="UNDO LAST RUN", command=self.undo_action, state='disabled', font=self.main_font, height=42)
+        self.undo_button.grid(row=5, column=1, sticky="ew", pady=(4, 0))
+        self.settings_button = customtkinter.CTkButton(right_frame, text="EDIT RULES & FILTERS", command=self.open_settings, font=self.main_font, height=42)
+        self.settings_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         options = customtkinter.CTkFrame(right_frame, fg_color="transparent")
-        options.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        options.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         customtkinter.CTkCheckBox(options, text="Include subfolders", variable=self.recursive_var).pack(side="left", padx=(0, 8))
-        customtkinter.CTkCheckBox(options, text="Notifications", variable=self.notify_var).pack(side="left", padx=(0, 8))
+        customtkinter.CTkCheckBox(options, text="Notifications", variable=self.notify_var, command=self._save_preferences).pack(side="left", padx=(0, 8))
         customtkinter.CTkCheckBox(options, text="Start with Windows", variable=self.autostart_var, command=self._save_preferences).pack(side="left")
         customtkinter.CTkCheckBox(options, text="Minimize to tray", variable=self.tray_var, command=self._save_preferences).pack(side="left", padx=(8, 0))
         
@@ -124,16 +124,12 @@ class AppGUI:
             self._animate_gif(0)
         self.root.after(100, self._process_log_queue)
         self.root.protocol("WM_DELETE_WINDOW", self._close_window)
-        self.root.bind("<Unmap>", self._on_window_minimized)
         self.log("WELCOME, SPACE-HEAD! SELECT A FOLDER TO GET STARTED.")
         last_folder = preferences.get("last_folder", "")
         if os.path.isdir(last_folder):
-            self.directory_path.set(last_folder)
-            self.preview_plan = build_preview(last_folder, self.settings["rules"], self.settings["filters"], self.recursive_var.get())
-            self._show_preview(last_folder)
-            self.start_button.configure(state="normal")
-        if preferences.get("autostart") and os.path.isdir(last_folder):
-            self.root.after(500, self.start_action)
+            self._load_folder(last_folder)
+            if preferences.get("autostart"):
+                self.root.after(500, self.start_action)
 
     def _setup_window_icon(self):
         """Sets the window icon. This method works reliably when running from source."""
@@ -208,249 +204,80 @@ class AppGUI:
         try:
             from winotify import Notification
             Notification(app_id="FLCL File Organizer", title=title, msg=message).show()
-        except (ImportError, OSError):
-            pass
-
-    def _save_preferences(self):
-        self.settings["preferences"].update({
-            "recursive": self.recursive_var.get(),
-            "notify": self.notify_var.get(),
-            "autostart": self.autostart_var.get(),
-            "minimize_to_tray": self.tray_var.get(),
-            "last_folder": self.directory_path.get(),
-        })
-        save_settings(self.settings)
-        self._set_autostart(self.autostart_var.get())
-
-    def _set_autostart(self, enabled):
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
-                if enabled:
-                    if getattr(sys, "frozen", False):
-                        command = f'"{sys.executable}"'
-                    else:
-                        command = f'"{sys.executable}" "{os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app.py"))}"'
-                    winreg.SetValueEx(key, "FLCLFileOrganizer", 0, winreg.REG_SZ, command)
-                else:
-                    try:
-                        winreg.DeleteValue(key, "FLCLFileOrganizer")
-                    except FileNotFoundError:
-                        pass
-        except OSError:
-            pass
-
-    def _close_window(self):
-        if self.tray_var.get() and pystray:
-            self.root.withdraw()
-            self._start_tray()
-            return
-        self._shutdown()
-
-    def _on_window_minimized(self, _event=None):
-        if self.tray_var.get() and pystray and self.root.state() == "iconic":
-            self.root.after(0, self._close_window)
-
-    def _start_tray(self):
-        if self.tray_icon:
-            return
-        try:
-            image = Image.open(resource_path("icon.png"))
-            menu = pystray.Menu(
-                pystray.MenuItem("Restore", lambda icon, item: self.root.after(0, self.root.deiconify)),
-                pystray.MenuItem("Exit", lambda icon, item: self.root.after(0, self._shutdown)),
-            )
-            self.tray_icon = pystray.Icon("FLCL File Organizer", image, "FLCL File Organizer", menu)
-            threading.Thread(target=self.tray_icon.run, daemon=True).start()
-        except (OSError, AttributeError):
-            self.root.deiconify()
-
-    def _shutdown(self):
-        if self.monitor_thread and self.monitor_thread.is_alive():
-            self.stop_event.set()
-        if self.tray_icon:
-            self.tray_icon.stop()
-        self.root.destroy()
+        except (ImportError, OSError): pass
 
     def select_folder(self):
         directory = filedialog.askdirectory()
         if directory:
-            self.directory_path.set(directory)
-            try:
-                self.preview_plan = build_preview(directory, self.settings["rules"], self.settings["filters"], self.recursive_var.get())
-            except (OSError, ValueError) as error:
-                self.preview_plan = []
-                self._set_preview(f"Unable to preview folder:\n{error}")
-                self.start_button.configure(state='disabled')
-                messagebox.showerror("PREVIEW ERROR", f"Could not scan the selected folder.\n{error}")
-                return
+            self._load_folder(directory)
+            self.log(f"FOLDER SELECTED: {directory}")
 
+    def _load_folder(self, directory):
+        self.directory_path.set(directory)
+        try:
+            self.preview_plan = build_preview(directory, self.settings["rules"], self.settings["filters"], self.recursive_var.get())
             self._show_preview(directory)
             self.start_button.configure(state='normal')
             self._save_preferences()
-            self.log(f"FOLDER SELECTED: {directory}")
+        except (OSError, ValueError) as error:
+            self.preview_plan = []
+            self._set_preview(f"Unable to preview folder:\n{error}")
+            self.start_button.configure(state='disabled')
+            messagebox.showerror("PREVIEW ERROR", str(error))
 
-        def _legacy_open_settings(self):
-            dialog = customtkinter.CTkToplevel(self.root)
-            dialog.title("Rules and Filters")
-            dialog.geometry("720x560")
-            dialog.transient(self.root)
-            dialog.grab_set()
+    def _set_preview(self, content):
+        if not hasattr(self, "preview_box"):
+            return
+        self.preview_box.configure(state='normal')
+        self.preview_box.delete("1.0", "end")
+        self.preview_box.insert("end", content)
+        self.preview_box.configure(state='disabled')
 
-            working = copy.deepcopy(self.settings)
-            categories = list(working["rules"])
-            selected = {"name": categories[0] if categories else None}
+    def _show_preview(self, directory):
+        move_items = [item for item in self.preview_plan if item["status"] == "move"]
+        ignored = [item for item in self.preview_plan if item["status"] == "ignored"]
+        no_rule = [item for item in move_items if not item["has_rule"]]
+        conflicts = [item for item in move_items if item["conflict"]]
+        lines = [f"PREVIEW: {len(self.preview_plan)} file(s) found", f"Files to organize: {len(move_items)}", f"Without matching rule: {len(no_rule)}", f"Name conflicts: {len(conflicts)}", f"Ignored: {len(ignored)}", "", "DESTINATION PLAN:"]
+        for item in move_items:
+            relative = os.path.relpath(item["destination_path"], directory)
+            flags = []
+            if not item["has_rule"]: flags.append("NO RULE")
+            if item["conflict"]: flags.append("RENAME")
+            lines.append(f"{item['filename']} -> {relative}" + (f" [{', '.join(flags)}]" if flags else ""))
+        self._set_preview("\n".join(lines))
 
-            dialog.grid_columnconfigure(1, weight=1)
-            dialog.grid_rowconfigure(1, weight=1)
-            customtkinter.CTkLabel(dialog, text="CATEGORIES", font=self.main_font).grid(row=0, column=0, padx=12, pady=12, sticky="w")
-            category_list = tk.Listbox(dialog, height=12, exportselection=False)
-            category_list.grid(row=1, column=0, rowspan=4, padx=12, sticky="nsew")
-            for category in categories:
-                category_list.insert("end", category)
+    def _save_preferences(self):
+        self.settings["preferences"].update({"recursive": self.recursive_var.get(), "notify": self.notify_var.get(), "autostart": self.autostart_var.get(), "minimize_to_tray": self.tray_var.get(), "last_folder": self.directory_path.get()})
+        save_settings(self.settings)
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
+                if self.autostart_var.get():
+                    command = f'"{sys.executable}" "{os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app.py"))}"'
+                    winreg.SetValueEx(key, "FLCLFileOrganizer", 0, winreg.REG_SZ, command)
+                else:
+                    try: winreg.DeleteValue(key, "FLCLFileOrganizer")
+                    except FileNotFoundError: pass
+        except OSError: pass
 
-            editor = customtkinter.CTkFrame(dialog, fg_color="transparent")
-            editor.grid(row=0, column=1, rowspan=5, padx=(0, 12), sticky="nsew")
-            editor.grid_columnconfigure(0, weight=1)
-            customtkinter.CTkLabel(editor, text="CATEGORY NAME").grid(row=0, column=0, sticky="w")
-            category_name = customtkinter.CTkEntry(editor)
-            category_name.grid(row=1, column=0, sticky="ew", pady=(4, 12))
-            customtkinter.CTkLabel(editor, text="DESTINATION FOLDER").grid(row=2, column=0, sticky="w")
-            destination_name = customtkinter.CTkEntry(editor)
-            destination_name.grid(row=3, column=0, sticky="ew", pady=(4, 12))
-            customtkinter.CTkLabel(editor, text="EXTENSIONS (comma separated)").grid(row=4, column=0, sticky="w")
-            extensions = customtkinter.CTkEntry(editor)
-            extensions.grid(row=5, column=0, sticky="ew", pady=(4, 12))
+    def pause_action(self):
+        if not self.monitor_thread or not self.monitor_thread.is_alive(): return
+        self.pause_event.clear() if self.pause_event.is_set() else self.pause_event.set()
+        self.pause_button.configure(text="PAUSE" if not self.pause_event.is_set() else "RESUME")
+        self._queue_log("Monitoring resumed." if not self.pause_event.is_set() else "Monitoring paused.")
 
-            def load_category(_event=None):
-                name = category_list.get(category_list.curselection()[0]) if category_list.curselection() else None
-                selected["name"] = name
-                category_name.delete(0, "end")
-                destination_name.delete(0, "end")
-                extensions.delete(0, "end")
-                if name:
-                    category_name.insert(0, name)
-                    destination_name.insert(0, name)
-                    extensions.insert(0, ", ".join(working["rules"].get(name, [])))
+    def undo_action(self):
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            messagebox.showwarning("MONITORING ACTIVE", "Stop monitoring before undoing the last run.")
+            return
+        self.undo_button.configure(state="disabled")
+        self.undo_thread = threading.Thread(target=undo_last_run, args=(self._queue_log,), daemon=True)
+        self.undo_thread.start()
+        self.root.after(100, self._finish_undo)
 
-            def save_category():
-                name = category_name.get().strip()
-                destination = destination_name.get().strip()
-                values = [item.strip().lower() for item in extensions.get().split(",") if item.strip()]
-                if not name or not destination:
-                    messagebox.showwarning("INVALID CATEGORY", "Category and destination are required.")
-                    return
-                old_name = selected["name"]
-                if old_name and old_name != destination:
-                    working["rules"].pop(old_name, None)
-                    index = category_list.curselection()[0]
-                    category_list.delete(index)
-                    category_list.insert(index, destination)
-                elif not old_name:
-                    category_list.insert("end", destination)
-                working["rules"][destination] = values
-                selected["name"] = destination
-                category_name.delete(0, "end")
-                category_name.insert(0, name)
-                destination_name.delete(0, "end")
-                destination_name.insert(0, destination)
-                category_list.selection_clear(0, "end")
-                index = list(category_list.get(0, "end")).index(destination)
-                category_list.selection_set(index)
-
-            def remove_category():
-                if not category_list.curselection():
-                    return
-                name = category_list.get(category_list.curselection()[0])
-                working["rules"].pop(name, None)
-                category_list.delete(category_list.curselection()[0])
-                selected["name"] = None
-                category_name.delete(0, "end")
-                destination_name.delete(0, "end")
-                extensions.delete(0, "end")
-
-            def refresh_editor():
-                category_list.delete(0, "end")
-                for category in working["rules"]:
-                    category_list.insert("end", category)
-                selected["name"] = None
-                if working["rules"]:
-                    category_list.selection_set(0)
-                    load_category()
-                hidden.set(working["filters"].get("ignore_hidden", True))
-                minimum_size.delete(0, "end")
-                minimum_size.insert(0, str(working["filters"].get("min_size_kb", 0)))
-                for key, field in filter_fields.items():
-                    field.delete(0, "end")
-                    field.insert(0, ", ".join(working["filters"].get(key, [])))
-
-            customtkinter.CTkButton(editor, text="SAVE CATEGORY", command=save_category).grid(row=6, column=0, sticky="ew", pady=(0, 6))
-            customtkinter.CTkButton(editor, text="REMOVE CATEGORY", command=remove_category).grid(row=7, column=0, sticky="ew")
-            category_list.bind("<<ListboxSelect>>", load_category)
-            if categories:
-                category_list.selection_set(0)
-                load_category()
-
-            filters_frame = customtkinter.CTkFrame(dialog)
-            filters_frame.grid(row=5, column=0, columnspan=2, padx=12, pady=12, sticky="ew")
-            filters_frame.grid_columnconfigure(1, weight=1)
-            customtkinter.CTkLabel(filters_frame, text="FILTERS", font=self.main_font).grid(row=0, column=0, columnspan=2, sticky="w", pady=(8, 4))
-            hidden = tk.BooleanVar(value=working["filters"].get("ignore_hidden", True))
-            customtkinter.CTkCheckBox(filters_frame, text="Ignore hidden files", variable=hidden).grid(row=1, column=0, columnspan=2, sticky="w")
-            customtkinter.CTkLabel(filters_frame, text="Minimum size (KB)").grid(row=2, column=0, sticky="w")
-            minimum_size = customtkinter.CTkEntry(filters_frame)
-            minimum_size.insert(0, str(working["filters"].get("min_size_kb", 0)))
-            minimum_size.grid(row=2, column=1, sticky="ew", padx=8)
-            filter_fields = {}
-            for row, label, key in [(3, "Ignored extensions", "ignored_extensions"), (4, "Ignored patterns", "ignored_patterns"), (5, "Ignored folders", "ignored_folders")]:
-                customtkinter.CTkLabel(filters_frame, text=label).grid(row=row, column=0, sticky="w")
-                field = customtkinter.CTkEntry(filters_frame)
-                field.insert(0, ", ".join(working["filters"].get(key, [])))
-                field.grid(row=row, column=1, sticky="ew", padx=8)
-                filter_fields[key] = field
-
-            def save_all():
-                try:
-                    working["filters"] = {
-                        "ignore_hidden": hidden.get(),
-                        "min_size_kb": float(minimum_size.get() or 0),
-                        **{key: [item.strip() for item in field.get().split(",") if item.strip()] for key, field in filter_fields.items()},
-                    }
-                except ValueError:
-                    messagebox.showwarning("INVALID FILTER", "Minimum size must be a number.")
-                    return
-                save_settings(working)
-                self.settings = working
-                dialog.destroy()
-                directory = self.directory_path.get()
-                if os.path.isdir(directory):
-                    self.preview_plan = build_preview(directory, self.settings["rules"], self.settings["filters"])
-                    self._show_preview(directory)
-                self.log("SETTINGS SAVED.")
-
-            def import_settings():
-                source = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
-                if not source:
-                    return
-                try:
-                    imported = load_settings_from_file(source)
-                    working["rules"] = imported["rules"]
-                    working["filters"] = imported["filters"]
-                    refresh_editor()
-                    messagebox.showinfo("IMPORTED", "Configuration imported. Click SAVE to apply it.")
-                except (OSError, ValueError, KeyError) as error:
-                    messagebox.showerror("IMPORT ERROR", str(error))
-
-            def export_settings():
-                target = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
-                if target:
-                    save_settings(working, target)
-                    messagebox.showinfo("EXPORTED", "Configuration exported successfully.")
-
-            buttons = customtkinter.CTkFrame(dialog, fg_color="transparent")
-            buttons.grid(row=6, column=0, columnspan=2, padx=12, sticky="ew")
-            customtkinter.CTkButton(buttons, text="IMPORT", command=import_settings).pack(side="left", padx=(0, 6))
-            customtkinter.CTkButton(buttons, text="EXPORT", command=export_settings).pack(side="left")
-            customtkinter.CTkButton(buttons, text="SAVE & CLOSE", command=save_all, fg_color=COLOR_PINK, hover_color="#C42A7A").pack(side="right")
+    def _finish_undo(self):
+        if self.undo_thread.is_alive(): self.root.after(100, self._finish_undo); return
+        self.undo_button.configure(state="normal" if has_history() else "disabled")
 
     def open_settings(self):
         dialog = customtkinter.CTkToplevel(self.root)
@@ -459,151 +286,45 @@ class AppGUI:
         dialog.transient(self.root)
         dialog.grab_set()
         working = copy.deepcopy(self.settings)
-        category_list = tk.Listbox(dialog, height=10, exportselection=False)
-        category_list.grid(row=0, column=0, rowspan=4, padx=12, pady=12, sticky="nsew")
-        editor = customtkinter.CTkFrame(dialog, fg_color="transparent")
-        editor.grid(row=0, column=1, padx=(0, 12), pady=12, sticky="nsew")
-        dialog.grid_columnconfigure(1, weight=1)
-        dialog.grid_rowconfigure(0, weight=1)
-        editor.grid_columnconfigure(0, weight=1)
-        fields = {}
-        for row, label in enumerate(("CATEGORY / DESTINATION", "EXTENSIONS (comma separated)")):
-            customtkinter.CTkLabel(editor, text=label).grid(row=row * 2, column=0, sticky="w")
-            fields[label] = customtkinter.CTkEntry(editor)
-            fields[label].grid(row=row * 2 + 1, column=0, sticky="ew", pady=(3, 12))
-        selected = {"name": None}
+        customtkinter.CTkLabel(dialog, text="Rules: category = destination folder").pack(padx=12, pady=(12, 4), anchor="w")
+        rules_box = customtkinter.CTkTextbox(dialog, height=130)
+        rules_box.pack(fill="x", padx=12)
+        rules_box.insert("1.0", "\n".join(f"{name}: {', '.join(values)}" for name, values in working["rules"].items()))
+        customtkinter.CTkLabel(dialog, text="Ignored extensions, patterns and folders (comma separated)").pack(padx=12, pady=(12, 4), anchor="w")
+        filters_box = customtkinter.CTkTextbox(dialog, height=90)
+        filters_box.pack(fill="x", padx=12)
+        filters = working["filters"]
+        filters_box.insert("1.0", f"extensions: {', '.join(filters.get('ignored_extensions', []))}\npatterns: {', '.join(filters.get('ignored_patterns', []))}\nfolders: {', '.join(filters.get('ignored_folders', []))}")
+        hidden = tk.BooleanVar(value=filters.get("ignore_hidden", True))
+        customtkinter.CTkCheckBox(dialog, text="Ignore hidden files", variable=hidden).pack(padx=12, pady=8, anchor="w")
+        customtkinter.CTkButton(dialog, text="SAVE & CLOSE", command=lambda: self._save_settings_dialog(dialog, working, rules_box, filters_box, hidden), fg_color=COLOR_PINK, hover_color="#C42A7A").pack(padx=12, pady=12, fill="x")
 
-        def refresh_categories():
-            category_list.delete(0, "end")
-            for name in working["rules"]:
-                category_list.insert("end", name)
+    def _save_settings_dialog(self, dialog, settings, rules_box, filters_box, hidden):
+        rules = {}
+        for line in rules_box.get("1.0", "end").splitlines():
+            if ":" in line:
+                name, values = line.split(":", 1); rules[name.strip()] = [item.strip().lower() for item in values.split(",") if item.strip()]
+        settings["rules"] = rules
+        values = dict(line.split(":", 1) for line in filters_box.get("1.0", "end").splitlines() if ":" in line)
+        settings["filters"] = {"ignore_hidden": hidden.get(), "min_size_kb": settings["filters"].get("min_size_kb", 0), "ignored_extensions": [item.strip() for item in values.get("extensions", "").split(",") if item.strip()], "ignored_patterns": [item.strip() for item in values.get("patterns", "").split(",") if item.strip()], "ignored_folders": [item.strip() for item in values.get("folders", "").split(",") if item.strip()]}
+        save_settings(settings); self.settings = settings; dialog.destroy()
+        if os.path.isdir(self.directory_path.get()): self._load_folder(self.directory_path.get())
 
-        def select_category(_event=None):
-            if not category_list.curselection():
-                return
-            name = category_list.get(category_list.curselection()[0])
-            selected["name"] = name
-            fields["CATEGORY / DESTINATION"].delete(0, "end")
-            fields["CATEGORY / DESTINATION"].insert(0, name)
-            fields["EXTENSIONS (comma separated)"].delete(0, "end")
-            fields["EXTENSIONS (comma separated)"].insert(0, ", ".join(working["rules"][name]))
+    def _close_window(self):
+        if self.tray_var.get() and pystray:
+            self.root.withdraw()
+            if not self.tray_icon:
+                image = Image.open(resource_path("icon.png"))
+                menu = pystray.Menu(pystray.MenuItem("Restore", lambda icon, item: self.root.after(0, self.root.deiconify)), pystray.MenuItem("Exit", lambda icon, item: self.root.after(0, self._shutdown)))
+                self.tray_icon = pystray.Icon("FLCL File Organizer", image, "FLCL File Organizer", menu)
+                threading.Thread(target=self.tray_icon.run, daemon=True).start()
+            return
+        self._shutdown()
 
-        def save_category():
-            name = fields["CATEGORY / DESTINATION"].get().strip()
-            values = [item.strip().lower() for item in fields["EXTENSIONS (comma separated)"].get().split(",") if item.strip()]
-            if not name:
-                return
-            old_name = selected["name"]
-            if old_name and old_name != name:
-                working["rules"].pop(old_name, None)
-            working["rules"][name] = values
-            selected["name"] = name
-            refresh_categories()
-            index = list(category_list.get(0, "end")).index(name)
-            category_list.selection_set(index)
-
-        def remove_category():
-            if category_list.curselection():
-                working["rules"].pop(category_list.get(category_list.curselection()[0]), None)
-                selected["name"] = None
-                refresh_categories()
-
-        category_list.bind("<<ListboxSelect>>", select_category)
-        refresh_categories()
-        customtkinter.CTkButton(editor, text="SAVE CATEGORY", command=save_category).grid(row=4, column=0, sticky="ew", pady=(0, 6))
-        customtkinter.CTkButton(editor, text="REMOVE CATEGORY", command=remove_category).grid(row=5, column=0, sticky="ew")
-
-        filters_frame = customtkinter.CTkFrame(dialog)
-        filters_frame.grid(row=4, column=0, columnspan=2, padx=12, sticky="ew")
-        filters_frame.grid_columnconfigure(1, weight=1)
-        filter_fields = {}
-        hidden = tk.BooleanVar(value=working["filters"].get("ignore_hidden", True))
-        customtkinter.CTkCheckBox(filters_frame, text="Ignore hidden files", variable=hidden).grid(row=0, column=0, columnspan=2, sticky="w")
-        customtkinter.CTkLabel(filters_frame, text="Minimum size (KB)").grid(row=1, column=0, sticky="w")
-        minimum_size = customtkinter.CTkEntry(filters_frame)
-        minimum_size.insert(0, str(working["filters"].get("min_size_kb", 0)))
-        minimum_size.grid(row=1, column=1, sticky="ew", padx=8)
-        for row, label, key in ((2, "Ignored extensions", "ignored_extensions"), (3, "Ignored patterns", "ignored_patterns"), (4, "Ignored folders", "ignored_folders")):
-            customtkinter.CTkLabel(filters_frame, text=label).grid(row=row, column=0, sticky="w")
-            field = customtkinter.CTkEntry(filters_frame)
-            field.insert(0, ", ".join(working["filters"].get(key, [])))
-            field.grid(row=row, column=1, sticky="ew", padx=8)
-            filter_fields[key] = field
-
-        def update_filter_fields(settings):
-            hidden.set(settings["filters"].get("ignore_hidden", True))
-            minimum_size.delete(0, "end")
-            minimum_size.insert(0, str(settings["filters"].get("min_size_kb", 0)))
-            for key, field in filter_fields.items():
-                field.delete(0, "end")
-                field.insert(0, ", ".join(settings["filters"].get(key, [])))
-
-        def import_config():
-            source = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
-            if source:
-                try:
-                    imported = load_settings_from_file(source)
-                    working.update(imported)
-                    refresh_categories()
-                    update_filter_fields(working)
-                except (OSError, ValueError) as error:
-                    messagebox.showerror("IMPORT ERROR", str(error))
-
-        def export_config():
-            target = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
-            if target:
-                save_settings(working, target)
-
-        def save_all():
-            try:
-                working["filters"] = {"ignore_hidden": hidden.get(), "min_size_kb": float(minimum_size.get() or 0), **{key: [item.strip() for item in field.get().split(",") if item.strip()] for key, field in filter_fields.items()}}
-                save_settings(working)
-                self.settings = working
-                dialog.destroy()
-                if os.path.isdir(self.directory_path.get()):
-                    self.preview_plan = build_preview(self.directory_path.get(), working["rules"], working["filters"])
-                    self._show_preview(self.directory_path.get())
-            except ValueError:
-                messagebox.showwarning("INVALID FILTER", "Minimum size must be a number.")
-
-        actions = customtkinter.CTkFrame(dialog, fg_color="transparent")
-        actions.grid(row=5, column=0, columnspan=2, padx=12, pady=12, sticky="ew")
-        customtkinter.CTkButton(actions, text="IMPORT", command=import_config).pack(side="left", padx=(0, 6))
-        customtkinter.CTkButton(actions, text="EXPORT", command=export_config).pack(side="left")
-        customtkinter.CTkButton(actions, text="SAVE & CLOSE", command=save_all, fg_color=COLOR_PINK, hover_color="#C42A7A").pack(side="right")
-
-    def _set_preview(self, content):
-        self.preview_box.configure(state='normal')
-        self.preview_box.delete("1.0", "end")
-        self.preview_box.insert("end", content)
-        self.preview_box.configure(state='disabled')
-
-    def _show_preview(self, directory):
-        move_items = [item for item in self.preview_plan if item["status"] == "move"]
-        no_rule_items = [item for item in move_items if not item["has_rule"]]
-        conflict_items = [item for item in move_items if item["conflict"]]
-        ignored_items = [item for item in self.preview_plan if item["status"] == "ignored"]
-
-        lines = [
-            f"PREVIEW: {len(self.preview_plan)} file(s) found",
-            f"Files to organize: {len(move_items)}",
-            f"Without matching rule: {len(no_rule_items)}",
-            f"Name conflicts: {len(conflict_items)}",
-            f"Ignored (no extension): {len(ignored_items)}",
-            "",
-            "DESTINATION PLAN:",
-        ]
-        for item in move_items:
-            relative_destination = os.path.relpath(item["destination_path"], directory)
-            flags = []
-            if not item["has_rule"]:
-                flags.append("NO RULE")
-            if item["conflict"]:
-                flags.append("RENAME")
-            suffix = f" [{', '.join(flags)}]" if flags else ""
-            lines.append(f"{item['filename']} -> {relative_destination}{suffix}")
-
-        self._set_preview("\n".join(lines))
+    def _shutdown(self):
+        if self.monitor_thread and self.monitor_thread.is_alive(): self.stop_event.set()
+        if self.tray_icon: self.tray_icon.stop()
+        self.root.destroy()
 
     def start_action(self):
         directory = self.directory_path.get()
@@ -612,31 +333,18 @@ class AppGUI:
             return
         if self.monitor_thread and self.monitor_thread.is_alive():
             return
-        if self.recursive_var.get() and not messagebox.askyesno(
-            "INCLUDE SUBFOLDERS",
-            "This will organize files inside all subfolders. Continue?",
-        ):
+        if self.recursive_var.get() and not messagebox.askyesno("INCLUDE SUBFOLDERS", "Organize files inside all subfolders?"):
             return
 
         self.start_button.configure(state='disabled')
         self.select_button.configure(state='disabled')
         self.stop_button.configure(state='normal')
+        self.pause_button.configure(state='normal', text='PAUSE')
 
         self.stop_event.clear()
+        self.pause_event.clear()
         self.monitor_thread = threading.Thread(target=start_monitoring, args=(directory, self.stop_event, self._queue_log, self.pause_event, self.recursive_var.get()), daemon=True)
         self.monitor_thread.start()
-
-    def pause_action(self):
-        if not self.monitor_thread or not self.monitor_thread.is_alive():
-            return
-        if self.pause_event.is_set():
-            self.pause_event.clear()
-            self.pause_button.configure(text="PAUSE")
-            self._queue_log("Monitoring resumed.")
-        else:
-            self.pause_event.set()
-            self.pause_button.configure(text="RESUME")
-            self._queue_log("Monitoring paused.")
 
     def stop_action(self):
         if not self.monitor_thread or not self.monitor_thread.is_alive():
@@ -658,31 +366,7 @@ class AppGUI:
 
     def _finish_stop(self):
         self.start_button.configure(state='normal')
-        self.undo_button.configure(state='normal' if has_history() else 'disabled')
         self.select_button.configure(state='normal')
         self.stop_button.configure(state='disabled', text='STOP')
         self.pause_button.configure(state='disabled', text='PAUSE')
-
-    def undo_action(self):
-        if self.monitor_thread and self.monitor_thread.is_alive():
-            messagebox.showwarning("MONITORING ACTIVE", "Stop monitoring before undoing the last run.")
-            return
-        if self.undo_thread and self.undo_thread.is_alive():
-            return
-        self.undo_button.configure(state='disabled')
-        self.undo_thread = threading.Thread(target=undo_last_run, args=(self._queue_log,), daemon=True)
-        self.undo_thread.start()
-        self.root.after(100, self._finish_undo)
-
-    def _finish_undo(self):
-        if self.undo_thread and self.undo_thread.is_alive():
-            self.root.after(100, self._finish_undo)
-            return
         self.undo_button.configure(state='normal' if has_history() else 'disabled')
-        directory = self.directory_path.get()
-        if os.path.isdir(directory):
-            try:
-                self.preview_plan = build_preview(directory, self.settings["rules"], self.settings["filters"], self.recursive_var.get())
-                self._show_preview(directory)
-            except OSError:
-                pass
