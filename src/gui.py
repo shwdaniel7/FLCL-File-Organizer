@@ -8,7 +8,12 @@ import os
 import sys
 import copy
 import tkinter as tk
+import winreg
 from PIL import Image
+try:
+    import pystray
+except ImportError:
+    pystray = None
 from .organizer import build_preview, has_history, load_settings, load_settings_from_file, save_settings, start_monitoring, undo_last_run
 
 def resource_path(relative_path):
@@ -32,7 +37,7 @@ class AppGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("FLCL - File Logical Classifier Launcher")
-        self.root.geometry("900x550")
+        self.root.geometry("900x680")
         self.root.resizable(False, False)
 
         # --- Instance variables ---
@@ -42,6 +47,13 @@ class AppGUI:
         self.log_queue = queue.Queue()
         self.preview_plan = []
         self.settings = load_settings()
+        preferences = self.settings["preferences"]
+        self.recursive_var = tk.BooleanVar(value=preferences.get("recursive", False))
+        self.notify_var = tk.BooleanVar(value=preferences.get("notify", True))
+        self.autostart_var = tk.BooleanVar(value=preferences.get("autostart", False))
+        self.tray_var = tk.BooleanVar(value=preferences.get("minimize_to_tray", False))
+        self.pause_event = threading.Event()
+        self.tray_icon = None
         self.undo_thread = None
         self.gif_frames = []
         self.gif_duration = 100
@@ -91,17 +103,37 @@ class AppGUI:
         self.stop_button = customtkinter.CTkButton(right_frame, text="STOP", command=self.stop_action, state='disabled', font=self.main_font)
         self.stop_button.grid(row=4, column=1, sticky="ew")
 
+        self.pause_button = customtkinter.CTkButton(right_frame, text="PAUSE", command=self.pause_action, state='disabled', font=self.main_font)
+        self.pause_button.grid(row=5, column=0, sticky="ew", padx=(0, 10))
+
         self.undo_button = customtkinter.CTkButton(right_frame, text="UNDO LAST RUN", command=self.undo_action, state='disabled', font=self.main_font)
-        self.undo_button.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.undo_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
         self.settings_button = customtkinter.CTkButton(right_frame, text="EDIT RULES & FILTERS", command=self.open_settings, font=self.main_font)
-        self.settings_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.settings_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
+        options = customtkinter.CTkFrame(right_frame, fg_color="transparent")
+        options.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        customtkinter.CTkCheckBox(options, text="Include subfolders", variable=self.recursive_var).pack(side="left", padx=(0, 8))
+        customtkinter.CTkCheckBox(options, text="Notifications", variable=self.notify_var).pack(side="left", padx=(0, 8))
+        customtkinter.CTkCheckBox(options, text="Start with Windows", variable=self.autostart_var, command=self._save_preferences).pack(side="left")
+        customtkinter.CTkCheckBox(options, text="Minimize to tray", variable=self.tray_var, command=self._save_preferences).pack(side="left", padx=(8, 0))
         
         # --- Initial State ---
         if self.gif_frames:
             self._animate_gif(0)
         self.root.after(100, self._process_log_queue)
+        self.root.protocol("WM_DELETE_WINDOW", self._close_window)
+        self.root.bind("<Unmap>", self._on_window_minimized)
         self.log("WELCOME, SPACE-HEAD! SELECT A FOLDER TO GET STARTED.")
+        last_folder = preferences.get("last_folder", "")
+        if os.path.isdir(last_folder):
+            self.directory_path.set(last_folder)
+            self.preview_plan = build_preview(last_folder, self.settings["rules"], self.settings["filters"], self.recursive_var.get())
+            self._show_preview(last_folder)
+            self.start_button.configure(state="normal")
+        if preferences.get("autostart") and os.path.isdir(last_folder):
+            self.root.after(500, self.start_action)
 
     def _setup_window_icon(self):
         """Sets the window icon. This method works reliably when running from source."""
@@ -163,18 +195,88 @@ class AppGUI:
     def _process_log_queue(self):
         try:
             while True:
-                self.log(self.log_queue.get_nowait())
+                message = self.log_queue.get_nowait()
+                self.log(message)
+                if self.notify_var.get() and message.startswith("File moved:"):
+                    self._notify("File organized", message)
         except queue.Empty:
             pass
         finally:
             self.root.after(100, self._process_log_queue)
+
+    def _notify(self, title, message):
+        try:
+            from winotify import Notification
+            Notification(app_id="FLCL File Organizer", title=title, msg=message).show()
+        except (ImportError, OSError):
+            pass
+
+    def _save_preferences(self):
+        self.settings["preferences"].update({
+            "recursive": self.recursive_var.get(),
+            "notify": self.notify_var.get(),
+            "autostart": self.autostart_var.get(),
+            "minimize_to_tray": self.tray_var.get(),
+            "last_folder": self.directory_path.get(),
+        })
+        save_settings(self.settings)
+        self._set_autostart(self.autostart_var.get())
+
+    def _set_autostart(self, enabled):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
+                if enabled:
+                    if getattr(sys, "frozen", False):
+                        command = f'"{sys.executable}"'
+                    else:
+                        command = f'"{sys.executable}" "{os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app.py"))}"'
+                    winreg.SetValueEx(key, "FLCLFileOrganizer", 0, winreg.REG_SZ, command)
+                else:
+                    try:
+                        winreg.DeleteValue(key, "FLCLFileOrganizer")
+                    except FileNotFoundError:
+                        pass
+        except OSError:
+            pass
+
+    def _close_window(self):
+        if self.tray_var.get() and pystray:
+            self.root.withdraw()
+            self._start_tray()
+            return
+        self._shutdown()
+
+    def _on_window_minimized(self, _event=None):
+        if self.tray_var.get() and pystray and self.root.state() == "iconic":
+            self.root.after(0, self._close_window)
+
+    def _start_tray(self):
+        if self.tray_icon:
+            return
+        try:
+            image = Image.open(resource_path("icon.png"))
+            menu = pystray.Menu(
+                pystray.MenuItem("Restore", lambda icon, item: self.root.after(0, self.root.deiconify)),
+                pystray.MenuItem("Exit", lambda icon, item: self.root.after(0, self._shutdown)),
+            )
+            self.tray_icon = pystray.Icon("FLCL File Organizer", image, "FLCL File Organizer", menu)
+            threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        except (OSError, AttributeError):
+            self.root.deiconify()
+
+    def _shutdown(self):
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.stop_event.set()
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.root.destroy()
 
     def select_folder(self):
         directory = filedialog.askdirectory()
         if directory:
             self.directory_path.set(directory)
             try:
-                self.preview_plan = build_preview(directory, self.settings["rules"], self.settings["filters"])
+                self.preview_plan = build_preview(directory, self.settings["rules"], self.settings["filters"], self.recursive_var.get())
             except (OSError, ValueError) as error:
                 self.preview_plan = []
                 self._set_preview(f"Unable to preview folder:\n{error}")
@@ -184,6 +286,7 @@ class AppGUI:
 
             self._show_preview(directory)
             self.start_button.configure(state='normal')
+            self._save_preferences()
             self.log(f"FOLDER SELECTED: {directory}")
 
         def _legacy_open_settings(self):
@@ -509,14 +612,31 @@ class AppGUI:
             return
         if self.monitor_thread and self.monitor_thread.is_alive():
             return
+        if self.recursive_var.get() and not messagebox.askyesno(
+            "INCLUDE SUBFOLDERS",
+            "This will organize files inside all subfolders. Continue?",
+        ):
+            return
 
         self.start_button.configure(state='disabled')
         self.select_button.configure(state='disabled')
         self.stop_button.configure(state='normal')
 
         self.stop_event.clear()
-        self.monitor_thread = threading.Thread(target=start_monitoring, args=(directory, self.stop_event, self._queue_log), daemon=True)
+        self.monitor_thread = threading.Thread(target=start_monitoring, args=(directory, self.stop_event, self._queue_log, self.pause_event, self.recursive_var.get()), daemon=True)
         self.monitor_thread.start()
+
+    def pause_action(self):
+        if not self.monitor_thread or not self.monitor_thread.is_alive():
+            return
+        if self.pause_event.is_set():
+            self.pause_event.clear()
+            self.pause_button.configure(text="PAUSE")
+            self._queue_log("Monitoring resumed.")
+        else:
+            self.pause_event.set()
+            self.pause_button.configure(text="RESUME")
+            self._queue_log("Monitoring paused.")
 
     def stop_action(self):
         if not self.monitor_thread or not self.monitor_thread.is_alive():
@@ -527,6 +647,7 @@ class AppGUI:
         self.start_button.configure(state='disabled')
         self.select_button.configure(state='disabled')
         self.stop_button.configure(state='disabled', text='STOPPING...')
+        self.pause_button.configure(state='disabled')
         self.root.after(100, self._wait_for_monitoring_stop)
 
     def _wait_for_monitoring_stop(self):
@@ -540,6 +661,7 @@ class AppGUI:
         self.undo_button.configure(state='normal' if has_history() else 'disabled')
         self.select_button.configure(state='normal')
         self.stop_button.configure(state='disabled', text='STOP')
+        self.pause_button.configure(state='disabled', text='PAUSE')
 
     def undo_action(self):
         if self.monitor_thread and self.monitor_thread.is_alive():
@@ -560,7 +682,7 @@ class AppGUI:
         directory = self.directory_path.get()
         if os.path.isdir(directory):
             try:
-                self.preview_plan = build_preview(directory)
+                self.preview_plan = build_preview(directory, self.settings["rules"], self.settings["filters"], self.recursive_var.get())
                 self._show_preview(directory)
             except OSError:
                 pass
