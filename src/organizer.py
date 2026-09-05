@@ -45,10 +45,21 @@ def _record_run(moves):
     if not moves:
         return
     history = _load_history()
-    history.append({
+    run_record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "moves": moves,
-    })
+        "moves": [],
+        "errors": [],
+    }
+    for move in moves:
+        if not isinstance(move, dict):
+            continue
+        if "error" in move:
+            run_record["errors"].append(move["error"])
+        else:
+            run_record["moves"].append(move)
+    if not run_record["moves"] and not run_record["errors"]:
+        return
+    history.append(run_record)
     _save_history(history)
 
 def _append_to_last_run(move):
@@ -56,11 +67,93 @@ def _append_to_last_run(move):
     if not history:
         _record_run([move])
         return
-    history[-1].setdefault("moves", []).append(move)
+    if not isinstance(move, dict):
+        _save_history(history)
+        return
+    if "error" in move:
+        history[-1].setdefault("errors", []).append(move["error"])
+    else:
+        history[-1].setdefault("moves", []).append(move)
     _save_history(history)
 
 def has_history():
     return bool(_load_history())
+
+
+def _format_size(size_bytes):
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(size_bytes)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def generate_report(monitored_dir, history=None):
+    """Return a summary of organized files, category usage, errors and recent operations."""
+    entries = history if history is not None else _load_history()
+    organized_files = 0
+    category_counts = {}
+    category_sizes = {}
+    errors = []
+    recent_history = []
+
+    for run in entries:
+        if not isinstance(run, dict):
+            continue
+        run_errors = run.get("errors", [])
+        if isinstance(run_errors, list):
+            errors.extend(str(item) for item in run_errors)
+
+        moves = run.get("moves", [])
+        if isinstance(moves, list):
+            recent_history.append({
+                "timestamp": run.get("timestamp"),
+                "files": [
+                    os.path.basename(move.get("destination", "")) for move in moves if isinstance(move, dict)
+                ][:5],
+                "count": len(moves),
+            })
+
+        for move in moves:
+            if not isinstance(move, dict):
+                continue
+            destination = move.get("destination")
+            if destination:
+                organized_files += 1
+            category = move.get("category")
+            if not category and destination:
+                try:
+                    relative = os.path.relpath(destination, monitored_dir)
+                    parent_dir = os.path.dirname(relative)
+                    category = os.path.basename(parent_dir) if parent_dir not in ("", ".") else "Root"
+                except (TypeError, ValueError):
+                    category = "Root"
+            if category:
+                category_counts[category] = category_counts.get(category, 0) + 1
+                size = os.path.getsize(destination) if destination and os.path.exists(destination) else 0
+                category_sizes[category] = category_sizes.get(category, 0) + size
+
+    errors = list(dict.fromkeys(errors))
+    popular_categories = [
+        {"name": name, "count": count}
+        for name, count in sorted(category_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    space_by_category = [
+        {"name": name, "size_bytes": size, "size_human": _format_size(size)}
+        for name, size in sorted(category_sizes.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+    return {
+        "organized_files": organized_files,
+        "popular_categories": popular_categories,
+        "errors": errors,
+        "space_by_category": space_by_category,
+        "recent_history": recent_history[-10:][::-1],
+    }
 
 def undo_last_run(log_callback):
     """Restore the files from the latest recorded organization run."""
@@ -325,12 +418,19 @@ def _process_and_move_file(file_path, monitored_dir, rules, log_callback, filter
         return {
             "original": file_path,
             "destination": final_destination_path,
+            "category": destination_folder_name,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
     except Exception as e:
-        log_callback(f"ERROR organizing {os.path.basename(file_path)}: {e}")
-    return None
+        error_message = f"ERROR organizing {os.path.basename(file_path)}: {e}"
+        log_callback(error_message)
+        return {
+            "original": file_path,
+            "destination": file_path,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": error_message,
+        }
 
 class OrganizerEventHandler(FileSystemEventHandler):
     """
@@ -356,7 +456,14 @@ class OrganizerEventHandler(FileSystemEventHandler):
             if move:
                 _append_to_last_run(move)
         else:
-            self.log(f"ERROR: Timed out waiting for '{filename}' to finish copying")
+            error_message = f"ERROR: Timed out waiting for '{filename}' to finish copying"
+            self.log(error_message)
+            _append_to_last_run({
+                "original": event.src_path,
+                "destination": event.src_path,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": error_message,
+            })
 
 def run_initial_scan(monitored_dir, rules, log_callback, filters=None, recursive=False):
     """

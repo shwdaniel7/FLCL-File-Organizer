@@ -14,7 +14,7 @@ try:
     import pystray
 except ImportError:
     pystray = None
-from .organizer import build_preview, has_history, load_settings, load_settings_from_file, save_settings, start_monitoring, undo_last_run
+from .organizer import build_preview, generate_report, has_history, load_settings, load_settings_from_file, save_settings, start_monitoring, undo_last_run
 
 def resource_path(relative_path):
     """Return a path to a bundled resource in source and PyInstaller modes."""
@@ -112,8 +112,10 @@ class AppGUI:
         self.undo_button.grid(row=5, column=1, sticky="ew", pady=(4, 0))
         self.settings_button = customtkinter.CTkButton(right_frame, text="EDIT RULES & FILTERS", command=self.open_settings, font=self.main_font, height=42)
         self.settings_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.report_button = customtkinter.CTkButton(right_frame, text="REPORTS", command=self.open_reports, font=self.main_font, height=42)
+        self.report_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         options = customtkinter.CTkFrame(right_frame, fg_color="transparent")
-        options.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        options.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         customtkinter.CTkCheckBox(options, text="Include subfolders", variable=self.recursive_var).pack(side="left", padx=(0, 8))
         customtkinter.CTkCheckBox(options, text="Notifications", variable=self.notify_var, command=self._save_preferences).pack(side="left", padx=(0, 8))
         customtkinter.CTkCheckBox(options, text="Start with Windows", variable=self.autostart_var, command=self._save_preferences).pack(side="left")
@@ -309,6 +311,75 @@ class AppGUI:
         settings["filters"] = {"ignore_hidden": hidden.get(), "min_size_kb": settings["filters"].get("min_size_kb", 0), "ignored_extensions": [item.strip() for item in values.get("extensions", "").split(",") if item.strip()], "ignored_patterns": [item.strip() for item in values.get("patterns", "").split(",") if item.strip()], "ignored_folders": [item.strip() for item in values.get("folders", "").split(",") if item.strip()]}
         save_settings(settings); self.settings = settings; dialog.destroy()
         if os.path.isdir(self.directory_path.get()): self._load_folder(self.directory_path.get())
+
+    def open_reports(self):
+        directory = self.directory_path.get()
+        if not os.path.isdir(directory):
+            messagebox.showinfo("REPORTS", "Select a valid folder before opening the report.")
+            return
+
+        report = generate_report(directory)
+        dialog = customtkinter.CTkToplevel(self.root)
+        dialog.title("Organization Report")
+        dialog.geometry("720x540")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        summary = customtkinter.CTkFrame(dialog, fg_color="transparent")
+        summary.pack(fill="x", padx=12, pady=(12, 8))
+        metrics = [
+            ("Files organized", str(report["organized_files"])),
+            ("Top category", report["popular_categories"][0]["name"] if report["popular_categories"] else "None"),
+            ("Errors", str(len(report["errors"]))),
+        ]
+        for index, (label, value) in enumerate(metrics):
+            frame = customtkinter.CTkFrame(summary, corner_radius=8)
+            frame.grid(row=0, column=index, sticky="ew", padx=(0, 8), ipadx=8, ipady=8)
+            customtkinter.CTkLabel(frame, text=label, font=self.log_font, anchor="w").pack(fill="x", padx=10, pady=(8, 0))
+            customtkinter.CTkLabel(frame, text=value, font=self.main_font).pack(fill="x", padx=10, pady=(0, 8))
+        summary.grid_columnconfigure((0, 1, 2), weight=1)
+
+        text_box = customtkinter.CTkTextbox(dialog, height=28, wrap="word", fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, text_color=COLOR_TEXT_WHITE)
+        text_box.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        text_box.configure(state='normal')
+
+        lines = [
+            "FILES ORGANIZED:",
+            f"{report['organized_files']}",
+            "",
+            "MOST USED CATEGORIES:",
+        ]
+        if report["popular_categories"]:
+            for item in report["popular_categories"][:5]:
+                lines.append(f"- {item['name']}: {item['count']} file(s)")
+        else:
+            lines.append("- No categorised files yet")
+
+        lines.extend(["", "ERRORS:"])
+        if report["errors"]:
+            for error in report["errors"][:10]:
+                lines.append(f"- {error}")
+        else:
+            lines.append("- No recorded errors")
+
+        lines.extend(["", "SPACE OCCUPIED BY CATEGORY:"])
+        if report["space_by_category"]:
+            for item in report["space_by_category"][:5]:
+                lines.append(f"- {item['name']}: {item['size_human']}")
+        else:
+            lines.append("- No files measured yet")
+
+        lines.extend(["", "HISTORICAL OPERATIONS:"])
+        if report["recent_history"]:
+            for entry in report["recent_history"][-10:]:
+                timestamp = entry.get("timestamp", "unknown")
+                files = ", ".join(entry.get("files", [])) or "no files"
+                lines.append(f"- {timestamp}: {entry.get('count', 0)} file(s) [{files}]")
+        else:
+            lines.append("- No recorded operations")
+
+        text_box.insert("1.0", "\n".join(lines))
+        text_box.configure(state='disabled')
 
     def _close_window(self):
         if self.tray_var.get() and pystray:
