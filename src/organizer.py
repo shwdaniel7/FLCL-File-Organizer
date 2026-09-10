@@ -438,6 +438,14 @@ def _iter_files(monitored_dir, rules, filters, recursive):
         for item_name in file_names:
             yield item_name, os.path.join(current_dir, item_name)
 
+def _safe_get_size(file_path):
+    """Return a file's size in bytes, or 0 when it cannot be read."""
+    try:
+        return os.path.getsize(file_path)
+    except OSError:
+        return 0
+
+
 def build_preview(monitored_dir, rules=None, filters=None, recursive=False):
     """Build a move plan without changing any files on disk."""
     if rules is None:
@@ -475,6 +483,8 @@ def build_preview(monitored_dir, rules=None, filters=None, recursive=False):
             "extension": extension,
             "destination_folder": destination_folder,
             "destination_path": destination_path,
+            "source_path": source_path,
+            "size": _safe_get_size(source_path),
             "has_rule": has_rule,
             "conflict": destination_path != base_destination,
             "status": "move",
@@ -533,12 +543,13 @@ class OrganizerEventHandler(FileSystemEventHandler):
     """
     Handles file system events detected by Watchdog.
     """
-    def __init__(self, monitored_dir, rules, log_callback, filters=None, pause_event=None):
+    def __init__(self, monitored_dir, rules, log_callback, filters=None, pause_event=None, excluded_paths=None):
         self.monitored_dir = monitored_dir
         self.rules = rules
         self.log = log_callback
         self.filters = filters or _default_settings()["filters"]
         self.pause_event = pause_event
+        self.excluded_paths = {os.path.normcase(path) for path in (excluded_paths or set())}
 
     def on_created(self, event):
         if event.is_directory:
@@ -546,6 +557,8 @@ class OrganizerEventHandler(FileSystemEventHandler):
         
         filename = os.path.basename(event.src_path)
         self.log(f"New file detected: {filename}")
+        if os.path.normcase(event.src_path) in self.excluded_paths:
+            return
         while self.pause_event and self.pause_event.is_set():
             time.sleep(0.2)
         if _wait_for_stable_file(event.src_path):
@@ -562,19 +575,24 @@ class OrganizerEventHandler(FileSystemEventHandler):
                 "error": error_message,
             })
 
-def run_initial_scan(monitored_dir, rules, log_callback, filters=None, recursive=False):
+def run_initial_scan(monitored_dir, rules, log_callback, filters=None, recursive=False, excluded_paths=None):
     """
     Scans the monitored folder and organizes all existing files.
 
     Files that are still changing (for example an active download) are skipped
-    instead of being moved mid-write.
+    instead of being moved mid-write. Paths listed in ``excluded_paths`` are
+    left untouched (selected out in the preview).
     """
+    excluded = {os.path.normcase(path) for path in (excluded_paths or set())}
     log_callback("Starting initial folder scan...")
     found_files = 0
     moved_files = 0
     moves = []
     for item_name, full_path in _iter_files(monitored_dir, rules, filters or _default_settings()["filters"], recursive):
         found_files += 1
+        if os.path.normcase(full_path) in excluded:
+            log_callback(f"SKIPPED: '{item_name}' was excluded in the preview.")
+            continue
         if not _wait_for_stable_file(full_path, checks=2, interval=0.5, timeout=15):
             log_callback(f"SKIPPED: '{item_name}' is still changing; waiting timed out.")
             continue
@@ -589,7 +607,7 @@ def run_initial_scan(monitored_dir, rules, log_callback, filters=None, recursive
         log_callback("No files to organize in the folder.")
     return moves
 
-def start_monitoring(directory, stop_event, log_callback, pause_event=None, recursive=False, notify_callback=None):
+def start_monitoring(directory, stop_event, log_callback, pause_event=None, recursive=False, notify_callback=None, excluded_paths=None):
     """
     Main function for the monitoring thread. Runs the initial scan, then starts the observer.
     """
@@ -597,10 +615,10 @@ def start_monitoring(directory, stop_event, log_callback, pause_event=None, recu
     rules = settings["rules"]
     filters = settings["filters"]
     
-    moves = run_initial_scan(directory, rules, log_callback, filters, recursive)
+    moves = run_initial_scan(directory, rules, log_callback, filters, recursive, excluded_paths)
     _record_run(moves)
 
-    event_handler = OrganizerEventHandler(directory, rules, log_callback, filters, pause_event)
+    event_handler = OrganizerEventHandler(directory, rules, log_callback, filters, pause_event, excluded_paths)
     observer = Observer()
     observer.schedule(event_handler, directory, recursive=recursive)
     observer.start()
