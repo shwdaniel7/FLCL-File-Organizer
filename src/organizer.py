@@ -3,12 +3,17 @@
 import os
 import json
 import time
+import uuid
 import shutil
 import sys
 import fnmatch
+import threading
 from datetime import datetime, timezone
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
+MAX_HISTORY_RUNS = 200
+_history_lock = threading.Lock()
 
 def resource_path(relative_path):
     """Return a path to a bundled resource in source and PyInstaller modes."""
@@ -27,54 +32,89 @@ def user_config_path():
     data_dir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.flcl-file-organizer")
     return os.path.join(data_dir, "FLCL-File-Organizer", "config.json")
 
-def _load_history():
+def _backup_corrupt_file(file_path):
+    """Move a corrupt JSON file aside so the app can operate with fresh state."""
+    if not file_path or not os.path.exists(file_path):
+        return
     try:
-        with open(history_path(), "r", encoding="utf-8") as history_file:
+        backup_path = f"{file_path}.corrupt.{int(time.time())}"
+        os.replace(file_path, backup_path)
+    except OSError:
+        pass
+
+def _atomic_write_json(file_path, data):
+    """Write JSON atomically so an interrupted save never corrupts the file."""
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    temp_path = f"{file_path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as temp_handle:
+        json.dump(data, temp_handle, indent=2)
+        temp_handle.flush()
+        os.fsync(temp_handle.fileno())
+    os.replace(temp_path, file_path)
+
+def _load_history():
+    file_path = history_path()
+    try:
+        with open(file_path, "r", encoding="utf-8") as history_file:
             history = json.load(history_file)
-            return history if isinstance(history, list) else []
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+            if not isinstance(history, list):
+                raise ValueError("History file must contain a JSON list.")
+            return history
+    except FileNotFoundError:
+        return []
+    except (json.JSONDecodeError, ValueError, TypeError, OSError):
+        _backup_corrupt_file(file_path)
         return []
 
 def _save_history(history):
-    file_path = history_path()
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with open(file_path, "w", encoding="utf-8") as history_file:
-        json.dump(history, history_file, indent=2)
+    if not isinstance(history, list):
+        return
+    capped = history[-MAX_HISTORY_RUNS:]
+    _atomic_write_json(history_path(), capped)
 
 def _record_run(moves):
     if not moves:
         return
-    history = _load_history()
-    run_record = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "moves": [],
-        "errors": [],
-    }
-    for move in moves:
-        if not isinstance(move, dict):
-            continue
-        if "error" in move:
-            run_record["errors"].append(move["error"])
-        else:
-            run_record["moves"].append(move)
-    if not run_record["moves"] and not run_record["errors"]:
-        return
-    history.append(run_record)
-    _save_history(history)
+    with _history_lock:
+        history = _load_history()
+        run_record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "moves": [],
+            "errors": [],
+        }
+        for move in moves:
+            if not isinstance(move, dict):
+                continue
+            if "error" in move:
+                run_record["errors"].append(move["error"])
+            else:
+                run_record["moves"].append(move)
+        if not run_record["moves"] and not run_record["errors"]:
+            return
+        history.append(run_record)
+        _save_history(history)
 
 def _append_to_last_run(move):
-    history = _load_history()
-    if not history:
-        _record_run([move])
-        return
-    if not isinstance(move, dict):
+    with _history_lock:
+        history = _load_history()
+        if not history:
+            if isinstance(move, dict):
+                run_record = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "moves": [] if "error" in move else [move],
+                    "errors": [move["error"]] if "error" in move else [],
+                }
+                history.append(run_record)
+                _save_history(history)
+            return
+        if not isinstance(move, dict):
+            _save_history(history)
+            return
+        if "error" in move:
+            history[-1].setdefault("errors", []).append(move["error"])
+        else:
+            history[-1].setdefault("moves", []).append(move)
         _save_history(history)
-        return
-    if "error" in move:
-        history[-1].setdefault("errors", []).append(move["error"])
-    else:
-        history[-1].setdefault("moves", []).append(move)
-    _save_history(history)
 
 def has_history():
     return bool(_load_history())
@@ -157,38 +197,39 @@ def generate_report(monitored_dir, history=None):
 
 def undo_last_run(log_callback):
     """Restore the files from the latest recorded organization run."""
-    history = _load_history()
-    if not history:
-        log_callback("Nothing to undo.")
-        return False
+    with _history_lock:
+        history = _load_history()
+        if not history:
+            log_callback("Nothing to undo.")
+            return False
 
-    last_run = history[-1]
-    remaining_moves = []
-    restored_count = 0
-    for move in reversed(last_run.get("moves", [])):
-        original_path = move["original"]
-        destination_path = move["destination"]
-        if not os.path.exists(destination_path):
-            log_callback(f"UNDO SKIPPED: file not found '{destination_path}'")
-            continue
-        if os.path.exists(original_path):
-            remaining_moves.append(move)
-            log_callback(f"UNDO SKIPPED: original path already exists '{original_path}'")
-            continue
-        try:
-            os.makedirs(os.path.dirname(original_path), exist_ok=True)
-            shutil.move(destination_path, original_path)
-            restored_count += 1
-            log_callback(f"Restored: '{os.path.basename(original_path)}'")
-        except OSError as error:
-            remaining_moves.append(move)
-            log_callback(f"ERROR undoing '{os.path.basename(destination_path)}': {error}")
+        last_run = history[-1]
+        remaining_moves = []
+        restored_count = 0
+        for move in reversed(last_run.get("moves", [])):
+            original_path = move["original"]
+            destination_path = move["destination"]
+            if not os.path.exists(destination_path):
+                log_callback(f"UNDO SKIPPED: file not found '{destination_path}'")
+                continue
+            if os.path.exists(original_path):
+                remaining_moves.append(move)
+                log_callback(f"UNDO SKIPPED: original path already exists '{original_path}'")
+                continue
+            try:
+                os.makedirs(os.path.dirname(original_path), exist_ok=True)
+                shutil.move(destination_path, original_path)
+                restored_count += 1
+                log_callback(f"Restored: '{os.path.basename(original_path)}'")
+            except OSError as error:
+                remaining_moves.append(move)
+                log_callback(f"ERROR undoing '{os.path.basename(destination_path)}': {error}")
 
-    if remaining_moves:
-        last_run["moves"] = list(reversed(remaining_moves))
-    else:
-        history.pop()
-    _save_history(history)
+        if remaining_moves:
+            last_run["moves"] = list(reversed(remaining_moves))
+        else:
+            history.pop()
+        _save_history(history)
     log_callback(f"Undo complete: {restored_count} file(s) restored.")
     return restored_count > 0
 
@@ -229,24 +270,40 @@ def _default_settings():
 
 def _normalize_settings(raw_settings):
     settings = _default_settings()
+    if not isinstance(raw_settings, dict):
+        return settings
     if "rules" in raw_settings:
-        settings["rules"] = raw_settings.get("rules", {})
-        settings["filters"].update(raw_settings.get("filters", {}))
-        settings["preferences"].update(raw_settings.get("preferences", {}))
+        rules = raw_settings.get("rules", {})
+        if isinstance(rules, dict):
+            settings["rules"] = rules
+        if isinstance(raw_settings.get("filters"), dict):
+            settings["filters"].update(raw_settings["filters"])
+        if isinstance(raw_settings.get("preferences"), dict):
+            settings["preferences"].update(raw_settings["preferences"])
     else:
-        settings["rules"] = raw_settings
+        if isinstance(raw_settings, dict):
+            settings["rules"] = raw_settings
     return settings
 
 def load_settings():
-    """Load user settings, falling back to the bundled legacy config."""
+    """Load user settings, falling back to the bundled configuration."""
     config_file = user_config_path()
-    if not os.path.isfile(config_file):
-        config_file = resource_path("config.json")
-    return load_settings_from_file(config_file)
+    if os.path.isfile(config_file):
+        try:
+            return load_settings_from_file(config_file)
+        except (json.JSONDecodeError, ValueError, OSError):
+            _backup_corrupt_file(config_file)
+    try:
+        return load_settings_from_file(resource_path("config.json"))
+    except (json.JSONDecodeError, ValueError, OSError):
+        return _default_settings()
 
 def load_settings_from_file(config_file):
-    with open(config_file, "r", encoding="utf-8") as config_handle:
-        settings = json.load(config_handle)
+    try:
+        with open(config_file, "r", encoding="utf-8") as config_handle:
+            settings = json.load(config_handle)
+    except (json.JSONDecodeError, OSError) as error:
+        raise ValueError(f"Invalid configuration file: {error}") from error
     if not isinstance(settings, dict):
         raise ValueError("Configuration must be a JSON object.")
     return _normalize_settings(settings)
@@ -282,9 +339,17 @@ def _wait_for_stable_file(file_path, checks=3, interval=0.5, timeout=30):
 
     return False
 
-def _unique_destination_path(destination_path):
-    """Return a non-conflicting path using the `name (n).ext` convention."""
-    if not os.path.exists(destination_path):
+def _unique_destination_path(destination_path, reserved=None):
+    """Return a non-conflicting path using the `name (n).ext` convention.
+
+    `reserved` may be a set of paths already claimed by an in-progress plan,
+    so collisions are detected against the plan, not only live disk state.
+    """
+    reserved = {os.path.normcase(path) for path in (reserved or set())}
+    def _is_available(candidate):
+        return not os.path.exists(candidate) and os.path.normcase(candidate) not in reserved
+
+    if _is_available(destination_path):
         return destination_path
 
     directory = os.path.dirname(destination_path)
@@ -293,9 +358,37 @@ def _unique_destination_path(destination_path):
     counter = 1
     while True:
         candidate = os.path.join(directory, f"{stem} ({counter}){extension}")
-        if not os.path.exists(candidate):
+        if _is_available(candidate):
             return candidate
         counter += 1
+
+def _safe_move(source_path, destination_path):
+    """Move a file so the destination only ever appears fully written.
+
+    Copies to a temporary file on the destination volume, replaces the final
+    name atomically, then removes the source. Interrupted copies leave a
+    cleaned-up temp file instead of a partial destination.
+    """
+    source_dir = os.path.abspath(os.path.dirname(source_path))
+    destination_dir = os.path.abspath(os.path.dirname(destination_path))
+    if source_dir == destination_dir:
+        shutil.move(source_path, destination_path)
+        return
+
+    os.makedirs(destination_dir, exist_ok=True)
+    partial_name = f".{os.path.basename(destination_path)}.{uuid.uuid4().hex}.partial"
+    partial_path = os.path.join(destination_dir, partial_name)
+    try:
+        shutil.copy2(source_path, partial_path)
+        os.replace(partial_path, destination_path)
+        os.remove(source_path)
+    except BaseException:
+        try:
+            if os.path.exists(partial_path):
+                os.remove(partial_path)
+        except OSError:
+            pass
+        raise
 
 def load_rules():
     """Load organization rules from the application resources."""
@@ -354,6 +447,7 @@ def build_preview(monitored_dir, rules=None, filters=None, recursive=False):
     preview = []
 
     files = sorted(_iter_files(monitored_dir, rules, filters, recursive), key=lambda item: item[0].lower())
+    reserved_destinations = set()
     for item_name, source_path in files:
         if item_name.startswith('~'):
             continue
@@ -372,14 +466,16 @@ def build_preview(monitored_dir, rules=None, filters=None, recursive=False):
             continue
 
         destination_dir = os.path.join(monitored_dir, destination_folder)
-        destination_path = _unique_destination_path(os.path.join(destination_dir, item_name))
+        base_destination = os.path.join(destination_dir, item_name)
+        destination_path = _unique_destination_path(base_destination, reserved=reserved_destinations)
+        reserved_destinations.add(destination_path)
         preview.append({
             "filename": item_name,
             "extension": extension,
             "destination_folder": destination_folder,
             "destination_path": destination_path,
             "has_rule": has_rule,
-            "conflict": destination_path != os.path.join(destination_dir, item_name),
+            "conflict": destination_path != base_destination,
             "status": "move",
         })
 
@@ -413,7 +509,7 @@ def _process_and_move_file(file_path, monitored_dir, rules, log_callback, filter
         
         final_destination_path = _unique_destination_path(os.path.join(destination_path, filename))
         
-        shutil.move(file_path, final_destination_path)
+        _safe_move(file_path, final_destination_path)
         log_callback(f"File moved: '{filename}' -> '{os.path.basename(final_destination_path)}' in '{destination_folder_name}'")
         return {
             "original": file_path,
@@ -468,18 +564,26 @@ class OrganizerEventHandler(FileSystemEventHandler):
 def run_initial_scan(monitored_dir, rules, log_callback, filters=None, recursive=False):
     """
     Scans the monitored folder and organizes all existing files.
+
+    Files that are still changing (for example an active download) are skipped
+    instead of being moved mid-write.
     """
     log_callback("Starting initial folder scan...")
     found_files = 0
+    moved_files = 0
     moves = []
     for item_name, full_path in _iter_files(monitored_dir, rules, filters or _default_settings()["filters"], recursive):
         found_files += 1
+        if not _wait_for_stable_file(full_path, checks=2, interval=0.5, timeout=15):
+            log_callback(f"SKIPPED: '{item_name}' is still changing; waiting timed out.")
+            continue
         move = _process_and_move_file(full_path, monitored_dir, rules, log_callback, filters)
         if move:
+            moved_files += 1
             moves.append(move)
     
     if found_files > 0:
-        log_callback("Initial scan complete.")
+        log_callback(f"Initial scan complete. {moved_files} file(s) organized.")
     else:
         log_callback("No files to organize in the folder.")
     return moves

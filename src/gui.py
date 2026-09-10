@@ -476,7 +476,10 @@ class AppGUI:
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
                 if self.autostart_var.get():
-                    command = f'"{sys.executable}" "{os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app.py"))}"'
+                    if getattr(sys, "frozen", False):
+                        command = f'"{sys.executable}"'
+                    else:
+                        command = f'"{sys.executable}" "{os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app.py"))}"'
                     winreg.SetValueEx(key, "FLCLFileOrganizer", 0, winreg.REG_SZ, command)
                 else:
                     try: winreg.DeleteValue(key, "FLCLFileOrganizer")
