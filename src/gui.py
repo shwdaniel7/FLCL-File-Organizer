@@ -14,7 +14,7 @@ try:
     import pystray
 except ImportError:
     pystray = None
-from .organizer import build_preview, generate_report, has_history, load_settings, load_settings_from_file, save_settings, start_monitoring, undo_last_run
+from .organizer import _format_size, build_preview, generate_report, has_history, load_settings, resource_path, save_settings, start_monitoring, undo_last_run
 
 
 class Tooltip:
@@ -52,22 +52,9 @@ class Tooltip:
             self.window.destroy()
             self.window = None
 
-def resource_path(relative_path):
-    """Return a path to a bundled resource in source and PyInstaller modes."""
-    try:
-        base_path = sys._MEIPASS
-    except AttributeError:
-        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_path, relative_path)
-
 customtkinter.set_appearance_mode("dark")
 customtkinter.set_default_color_theme("blue")
 
-COLOR_PINK = "#FF3399"
-COLOR_YELLOW = "#F6E500"
-COLOR_WIDGET_BG = "#2B2B2B"
-COLOR_BORDER = "#565B5E"
-COLOR_TEXT_WHITE = "#DCE4EE"
 THEME_PALETTES = {
     "FLCL": {
         "accent": "#FF3399",
@@ -117,6 +104,17 @@ class AppGUI:
         self.autostart_var = tk.BooleanVar(value=preferences.get("autostart", False))
         self.tray_var = tk.BooleanVar(value=preferences.get("minimize_to_tray", False))
         self.theme_var = tk.StringVar(value=preferences.get("theme", "FLCL"))
+        self.p = THEME_PALETTES.get(self.theme_var.get(), THEME_PALETTES["FLCL"])
+        self.preview_plan = []
+        self.preview_rows = []
+        self._excluded_sources = set()
+        self.current_directory = ""
+        self._preview_last_width = 0
+        self._resize_job = None
+        self._measure_fontobj = None
+        self._shutting_down = False
+        self.moved_count = 0
+        self.error_count = 0
         self.pause_event = threading.Event()
         self.undo_thread = None
         self.tray_icon = None
@@ -131,8 +129,8 @@ class AppGUI:
         self._load_gif_frames()
 
         # --- Layout Configuration ---
-        self.root.grid_columnconfigure(0, weight=1, minsize=280)
-        self.root.grid_columnconfigure(1, weight=2, minsize=540)
+        self.root.grid_columnconfigure(0, weight=1, minsize=200)
+        self.root.grid_columnconfigure(1, weight=2, minsize=480)
         self.root.grid_rowconfigure(0, weight=1)
 
         # --- Left Frame (GIF) ---
@@ -148,10 +146,10 @@ class AppGUI:
         right_frame.grid_rowconfigure(2, weight=1)
 
         # --- Widgets ---
-        folder_label = customtkinter.CTkLabel(right_frame, text="Folder to organize", font=self.main_font, text_color=COLOR_TEXT_WHITE)
+        folder_label = customtkinter.CTkLabel(right_frame, text="Folder to organize", font=self.main_font, text_color=self.p["text"])
         folder_label.grid(row=0, column=0, sticky="w", pady=(0, 5))
 
-        folder_entry = customtkinter.CTkEntry(right_frame, textvariable=self.directory_path, state='readonly', font=self.main_font, height=42, fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER)
+        folder_entry = customtkinter.CTkEntry(right_frame, textvariable=self.directory_path, state='readonly', font=self.main_font, height=42, fg_color=self.p["surface"], border_color=self.p["border"])
         folder_entry.grid(row=1, column=0, sticky="ew", padx=(0, 112))
 
         self.select_button = customtkinter.CTkButton(right_frame, text="Browse", command=self.select_folder, font=self.main_font, width=102, height=42)
@@ -169,29 +167,37 @@ class AppGUI:
         organize_view.grid_columnconfigure(0, weight=1)
         organize_view.grid_rowconfigure(2, weight=1)
         activity_view.grid_columnconfigure(0, weight=1)
-        activity_view.grid_rowconfigure(1, weight=1)
+        activity_view.grid_rowconfigure(2, weight=1)
         settings_view.grid_columnconfigure(0, weight=1)
 
-        self.preview_button = customtkinter.CTkButton(organize_view, text="Refresh preview", command=self.refresh_preview, font=self.main_font, height=34)
-        self.preview_button.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        Tooltip(self.preview_button, "Refresh the move preview for the selected folder.")
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *_: self._rebuild_preview_rows())
+        self.preview_toolbar = customtkinter.CTkFrame(organize_view, fg_color="transparent")
+        self.preview_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.preview_toolbar.grid_columnconfigure(0, weight=1)
+        self.search_entry = customtkinter.CTkEntry(self.preview_toolbar, textvariable=self.search_var, font=self.log_font, placeholder_text="Search files in preview...", fg_color=self.p["surface"], border_color=self.p["border"])
+        self.search_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.preview_button = customtkinter.CTkButton(self.preview_toolbar, text="Refresh preview", command=self.refresh_preview, font=self.main_font, height=34, fg_color=self.p["panel"], hover_color=self.p["surface"], text_color=self.p["text"])
+        self.preview_button.grid(row=0, column=1)
+        Tooltip(self.preview_button, "Refresh the move preview for the selected folder (F5).")
 
         self.summary_frame = customtkinter.CTkFrame(organize_view, fg_color="transparent")
         self.summary_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        self.summary_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        self.summary_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
         self.summary_cards = []
-        for index, label in enumerate(["To organize", "No rule", "Conflicts", "Ignored"]):
-            card = customtkinter.CTkFrame(self.summary_frame, corner_radius=12, fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, border_width=1)
-            card.grid(row=0, column=index, sticky="nsew", padx=(0, 8) if index < 3 else (0, 0))
-            customtkinter.CTkLabel(card, text=label, font=self.log_font, text_color=COLOR_TEXT_WHITE, anchor="w").pack(anchor="w", padx=12, pady=(10, 0))
-            value = customtkinter.CTkLabel(card, text="0", font=self.main_font, text_color=COLOR_PINK, anchor="w")
+        for index, label in enumerate(["To organize", "No rule", "Conflicts", "Ignored", "Total size"]):
+            card = customtkinter.CTkFrame(self.summary_frame, corner_radius=12, fg_color=self.p["surface"], border_color=self.p["border"], border_width=1)
+            card.grid(row=0, column=index, sticky="nsew", padx=(0, 8) if index < 4 else (0, 0))
+            customtkinter.CTkLabel(card, text=label, font=self.log_font, text_color=self.p["text"], anchor="w").pack(anchor="w", padx=12, pady=(10, 0))
+            value = customtkinter.CTkLabel(card, text="0", font=self.main_font, text_color=self.p["accent"], anchor="w")
             value.pack(anchor="w", padx=12, pady=(2, 10))
             self.summary_cards.append(value)
 
-        self.preview_box = customtkinter.CTkTextbox(organize_view, state='disabled', font=self.log_font, wrap="word", fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, text_color=COLOR_TEXT_WHITE)
-        self.preview_box.grid(row=2, column=0, sticky="nsew")
+        self.preview_list = customtkinter.CTkScrollableFrame(organize_view, fg_color=self.p["surface"], border_color=self.p["border"], border_width=1, corner_radius=10)
+        self.preview_list.grid(row=2, column=0, sticky="nsew")
+        self.preview_list.bind("<Configure>", lambda event: self._on_preview_resize(event))
 
-        status_frame = customtkinter.CTkFrame(activity_view, fg_color=COLOR_WIDGET_BG, corner_radius=10)
+        status_frame = customtkinter.CTkFrame(activity_view, fg_color=self.p["surface"], corner_radius=10)
         status_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         status_frame.grid_columnconfigure(0, weight=1)
         status_frame.grid_columnconfigure(1, weight=2)
@@ -203,15 +209,26 @@ class AppGUI:
         self.status_hint.grid(row=1, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 10))
         self._set_state("Stopped")
 
-        self.log_box = customtkinter.CTkTextbox(activity_view, state='disabled', font=self.log_font, wrap="word", fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, text_color=COLOR_YELLOW)
-        self.log_box.grid(row=1, column=0, sticky="nsew")
+        counter_frame = customtkinter.CTkFrame(activity_view, fg_color="transparent")
+        counter_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        counter_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        self.moved_label = customtkinter.CTkLabel(counter_frame, text="Files moved: 0", font=self.main_font, text_color=self.p["success"], anchor="w")
+        self.moved_label.grid(row=0, column=0, sticky="w")
+        self.error_label = customtkinter.CTkLabel(counter_frame, text="Errors: 0", font=self.main_font, text_color=self.p["error"], anchor="w")
+        self.error_label.grid(row=0, column=1, sticky="w")
+        clear_log_button = customtkinter.CTkButton(counter_frame, text="Clear log", command=self._clear_log, font=self.log_font, width=100, height=28, fg_color=self.p["panel"], hover_color=self.p["surface"], text_color=self.p["text"])
+        clear_log_button.grid(row=0, column=2, sticky="e")
+        Tooltip(clear_log_button, "Clear the activity log.")
+
+        self.log_box = customtkinter.CTkTextbox(activity_view, state='disabled', font=self.log_font, wrap="word", fg_color=self.p["surface"], border_color=self.p["border"], text_color=self.p["warning"])
+        self.log_box.grid(row=2, column=0, sticky="nsew")
 
         action_bar = customtkinter.CTkFrame(right_frame, fg_color="transparent")
         action_bar.grid(row=3, column=0, sticky="ew", pady=(0, 8))
         action_bar.grid_columnconfigure(0, weight=3)
         action_bar.grid_columnconfigure(1, weight=1, minsize=102)
 
-        self.start_button = customtkinter.CTkButton(action_bar, text="Start", command=self.start_action, state='disabled', font=self.main_font, height=46, fg_color=COLOR_PINK, hover_color="#C42A7A")
+        self.start_button = customtkinter.CTkButton(action_bar, text="Start", command=self.start_action, state='disabled', font=self.main_font, height=46, fg_color=self.p["accent"], hover_color=self.p["accent_soft"])
         self.start_button.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         Tooltip(self.start_button, "Start organizing files in the selected folder.")
 
@@ -246,7 +263,7 @@ class AppGUI:
         appearance.grid(row=9, column=0, sticky="ew", pady=(16, 0))
         theme_label = customtkinter.CTkLabel(appearance, text="Appearance:")
         theme_label.pack(side="left", padx=(0, 8))
-        self.theme_menu = customtkinter.CTkOptionMenu(appearance, values=["FLCL", "Neutral"], variable=self.theme_var, command=self._apply_theme)
+        self.theme_menu = customtkinter.CTkOptionMenu(appearance, values=["FLCL", "Neutral"], variable=self.theme_var, command=lambda choice: (self._apply_theme(choice), self._save_preferences()))
         self.theme_menu.pack(side="left")
         Tooltip(self.theme_menu, "Choose between the FLCL aesthetic and the dark neutral interface.")
 
@@ -257,6 +274,11 @@ class AppGUI:
             self._animate_gif(0)
         self.root.after(100, self._process_log_queue)
         self.root.protocol("WM_DELETE_WINDOW", self._close_window)
+        self.root.bind("<Control-o>", lambda event: self.select_folder())
+        self.root.bind("<F5>", lambda event: self.refresh_preview())
+        self.root.bind("<Control-p>", lambda event: self.refresh_preview())
+        self.root.bind("<Control-r>", lambda event: self.start_action())
+        self.root.bind("<Control-s>", lambda event: self.stop_action())
         self.log("Ready. Select a folder to begin.")
         last_folder = preferences.get("last_folder", "")
         if os.path.isdir(last_folder):
@@ -305,7 +327,8 @@ class AppGUI:
             print("Warning: 'haruko.gif' not found.")
 
     def _animate_gif(self, frame_index):
-        if not self.gif_frames: return
+        if self._shutting_down or not self.gif_frames:
+            return
         frame = self.gif_frames[frame_index]
         self.gif_label.configure(image=frame)
         next_frame_index = (frame_index + 1) % len(self.gif_frames)
@@ -340,13 +363,7 @@ class AppGUI:
     def _apply_theme(self, choice):
         self.settings["preferences"]["theme"] = choice
         self.theme_var.set(choice)
-        palette = THEME_PALETTES.get(choice, THEME_PALETTES["FLCL"])
-        global COLOR_PINK, COLOR_YELLOW, COLOR_WIDGET_BG, COLOR_BORDER, COLOR_TEXT_WHITE
-        COLOR_PINK = palette["accent"]
-        COLOR_YELLOW = palette["warning"]
-        COLOR_WIDGET_BG = palette["surface"]
-        COLOR_BORDER = palette["border"]
-        COLOR_TEXT_WHITE = palette["text"]
+        self.p = palette = THEME_PALETTES.get(choice, THEME_PALETTES["FLCL"])
 
         customtkinter.set_appearance_mode("dark")
         customtkinter.set_default_color_theme("dark-blue")
@@ -366,8 +383,14 @@ class AppGUI:
             self.report_button.configure(fg_color=palette["panel"], hover_color=palette["surface"], text_color=palette["text"])
         if hasattr(self, "preview_button"):
             self.preview_button.configure(fg_color=palette["panel"], hover_color=palette["surface"], text_color=palette["text"])
-        if hasattr(self, "preview_box"):
-            self.preview_box.configure(fg_color=palette["surface"], border_color=palette["border"], text_color=palette["text"])
+        if hasattr(self, "preview_list"):
+            self.preview_list.configure(fg_color=palette["surface"], border_color=palette["border"])
+        if hasattr(self, "search_entry"):
+            self.search_entry.configure(fg_color=palette["surface"], border_color=palette["border"], text_color=palette["text"])
+        if hasattr(self, "moved_label"):
+            self.moved_label.configure(text_color=palette["success"])
+        if hasattr(self, "error_label"):
+            self.error_label.configure(text_color=palette["error"])
         if hasattr(self, "log_box"):
             self.log_box.configure(fg_color=palette["surface"], border_color=palette["border"], text_color=palette["warning"])
         if hasattr(self, "status_label"):
@@ -377,23 +400,36 @@ class AppGUI:
                 card.configure(text_color=palette["accent"])
         if hasattr(self, "theme_menu"):
             self.theme_menu.configure(fg_color=palette["panel"], button_color=palette["panel"], button_hover_color=palette["surface"], text_color=palette["text"], dropdown_fg_color=palette["panel"], dropdown_hover_color=palette["surface"], dropdown_text_color=palette["text"])
-        self._save_preferences()
+        self._rebuild_preview_rows()
 
     def _queue_log(self, message):
         """Queue worker messages so Tkinter is only updated on the UI thread."""
         self.log_queue.put(message)
 
     def _process_log_queue(self):
+        if self._shutting_down:
+            return
         try:
             while True:
                 message = self.log_queue.get_nowait()
                 self.log(message)
+                if message.startswith("File moved:"):
+                    self.moved_count += 1
+                    self.moved_label.configure(text=f"Files moved: {self.moved_count}")
+                elif message.startswith("ERROR"):
+                    self.error_count += 1
+                    self.error_label.configure(text=f"Errors: {self.error_count}")
                 if self.notify_var.get() and message.startswith("File moved:"):
                     self._notify("File organized", message)
         except queue.Empty:
             pass
         finally:
             self.root.after(100, self._process_log_queue)
+
+    def _clear_log(self):
+        self.log_box.configure(state='normal')
+        self.log_box.delete("1.0", "end")
+        self.log_box.configure(state='disabled')
 
     def _notify(self, title, message):
         try:
@@ -417,29 +453,53 @@ class AppGUI:
             self._save_preferences()
         except (OSError, ValueError) as error:
             self.preview_plan = []
-            self._set_preview(f"Unable to preview folder:\n{error}")
+            self._show_preview_error(f"Unable to preview folder:\n{error}")
             self.start_button.configure(state='disabled')
             self._set_state("Error", "Preview failed. Check folder permissions or choose another location.")
             messagebox.showerror("Preview unavailable", "The selected folder could not be read. Check that it exists and you have access to it.")
 
-    def _set_preview(self, content):
-        if not hasattr(self, "preview_box"):
-            return
-        self.preview_box.configure(state='normal')
-        self.preview_box.delete("1.0", "end")
-        self.preview_box.insert("end", content)
-        self.preview_box.configure(state='disabled')
+    def _show_preview_error(self, content):
+        self._clear_preview_list()
+        customtkinter.CTkLabel(self.preview_list, text=content, font=self.log_font, text_color=self.p["error"], anchor="w", justify="left").pack(fill="x", padx=12, pady=12)
+
+    def _clear_preview_list(self):
+        for child in self.preview_list.winfo_children():
+            child.destroy()
+        self.preview_rows = []
+
+    def _selected_move_items(self):
+        return [
+            item for item in self.preview_plan
+            if item["status"] == "move"
+            and os.path.normcase(item["source_path"]) not in self._excluded_sources
+        ]
 
     def _update_summary_cards(self):
         if not hasattr(self, "summary_cards"):
             return
-        move_items = [item for item in self.preview_plan if item["status"] == "move"]
+        selected = self._selected_move_items()
         ignored = [item for item in self.preview_plan if item["status"] == "ignored"]
-        no_rule = [item for item in move_items if not item["has_rule"]]
-        conflicts = [item for item in move_items if item["conflict"]]
-        values = [len(move_items), len(no_rule), len(conflicts), len(ignored)]
+        no_rule = [item for item in selected if not item["has_rule"]]
+        conflicts = [item for item in selected if item["conflict"]]
+        total_size = sum(item["size"] for item in selected)
+        values = [
+            str(len(selected)),
+            str(len(no_rule)),
+            str(len(conflicts)),
+            str(len(ignored)),
+            _format_size(total_size) if selected else "0 B",
+        ]
         for label, value in zip(self.summary_cards, values):
-            label.configure(text=str(value))
+            label.configure(text=value)
+
+    def _on_preview_toggle(self):
+        for row in self.preview_rows:
+            path = os.path.normcase(row["item"]["source_path"])
+            if row["check"].get():
+                self._excluded_sources.discard(path)
+            else:
+                self._excluded_sources.add(path)
+        self._update_summary_cards()
 
     def refresh_preview(self):
         directory = self.directory_path.get()
@@ -448,20 +508,132 @@ class AppGUI:
             return
         self._load_folder(directory)
 
+    def _measure_font(self):
+        if self._measure_fontobj is not None:
+            return self._measure_fontobj
+        try:
+            import tkinter.font as tkfont
+            if isinstance(self.log_font, customtkinter.CTkFont):
+                self._measure_fontobj = tkfont.Font(
+                    self.root, family=self.log_font.cget("family"), size=self.log_font.cget("size")
+                )
+            else:
+                self._measure_fontobj = tkfont.Font(self.root, family="Consolas", size=10)
+        except Exception:
+            self._measure_fontobj = ("Consolas", 10)
+        return self._measure_fontobj
+
+    def _ellipsize(self, text, max_width):
+        if not text or max_width <= 12:
+            return text
+        try:
+            font = self._measure_font()
+            available = max(12, max_width - 4)
+            if font.measure(text) <= available:
+                return text
+            trimmed = text
+            while trimmed and font.measure(trimmed + "…") > available:
+                trimmed = trimmed[:-1]
+            return trimmed + "…" if trimmed else "…"
+        except Exception:
+            return text
+
+    def _on_preview_resize(self, event):
+        if not self.preview_plan:
+            return
+        if abs(event.width - self._preview_last_width) < 20:
+            return
+        self._preview_last_width = event.width
+        if self._resize_job is not None:
+            try:
+                self.root.after_cancel(self._resize_job)
+            except tk.TclError:
+                pass
+        self._resize_job = self.root.after(60, self._debounced_preview_rerender)
+
+    def _debounced_preview_rerender(self):
+        self._resize_job = None
+        if self.current_directory and os.path.isdir(self.current_directory):
+            self._show_preview(self.current_directory)
+
     def _show_preview(self, directory):
-        move_items = [item for item in self.preview_plan if item["status"] == "move"]
-        ignored = [item for item in self.preview_plan if item["status"] == "ignored"]
-        no_rule = [item for item in move_items if not item["has_rule"]]
-        conflicts = [item for item in move_items if item["conflict"]]
-        self._update_summary_cards()
-        lines = [f"Preview: {len(self.preview_plan)} file(s) found", f"Files to organize: {len(move_items)}", f"Without matching rule: {len(no_rule)}", f"Name conflicts: {len(conflicts)}", f"Ignored: {len(ignored)}", "", "Destination plan:"]
+        self.current_directory = directory
+        self._clear_preview_list()
+        move_items = sorted(
+            [item for item in self.preview_plan if item["status"] == "move"],
+            key=lambda item: item["filename"].lower(),
+        )
+        query = self.search_var.get().strip().lower()
         for item in move_items:
-            relative = os.path.relpath(item["destination_path"], directory)
-            flags = []
-            if not item["has_rule"]: flags.append("NO RULE")
-            if item["conflict"]: flags.append("RENAME")
-            lines.append(f"{item['filename']} -> {relative}" + (f" [{', '.join(flags)}]" if flags else ""))
-        self._set_preview("\n".join(lines))
+            if query and query not in item["filename"].lower():
+                continue
+            self._preview_list_row(item)
+        self._update_summary_cards()
+
+    def _preview_list_row(self, item):
+        row_frame = customtkinter.CTkFrame(self.preview_list, fg_color="transparent")
+        row_frame.pack(fill="x", pady=2, padx=4)
+        row_frame.grid_columnconfigure(1, weight=1)
+        row_frame.grid_columnconfigure(3, weight=1)
+
+        total_width = self.preview_list.winfo_width() or 760
+        checkbox_w = 30
+        size_w = 70
+        flags_w = 86
+        padx_total = 6 + 2 + 8 + 4 + 4 + 4 + 8
+        dest_w = max(110, int(total_width * 0.26))
+        name_w = max(80, total_width - checkbox_w - size_w - flags_w - dest_w - padx_total)
+
+        is_excluded = os.path.normcase(item["source_path"]) in self._excluded_sources
+        check_var = tk.BooleanVar(value=not is_excluded)
+        check = customtkinter.CTkCheckBox(
+            row_frame,
+            text="",
+            variable=check_var,
+            command=self._on_preview_toggle,
+            width=checkbox_w,
+            height=24,
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        check.grid(row=0, column=0, sticky="w", padx=(6, 2))
+        name_label = customtkinter.CTkLabel(
+            row_frame, text=self._ellipsize(item["filename"], name_w),
+            font=self.log_font, text_color=self.p["text"], anchor="w",
+            width=name_w, justify="left",
+        )
+        name_label.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        Tooltip(name_label, item["filename"])
+        customtkinter.CTkLabel(
+            row_frame, text=_format_size(item["size"]), font=self.log_font,
+            text_color=self.p["muted"], width=size_w, anchor="e",
+        ).grid(row=0, column=2, sticky="e", padx=4)
+        dest_text = f"→ {os.path.relpath(item['destination_path'], self.current_directory)}"
+        dest_label = customtkinter.CTkLabel(
+            row_frame, text=self._ellipsize(dest_text, dest_w),
+            font=self.log_font, text_color=self.p["muted"],
+            width=dest_w, anchor="w", justify="left",
+        )
+        dest_label.grid(row=0, column=3, sticky="w", padx=(4, 4))
+        Tooltip(dest_label, dest_text)
+        flags = []
+        if not item["has_rule"]:
+            flags.append(("NO RULE", self.p["warning"]))
+        if item["conflict"]:
+            flags.append(("RENAME", self.p["error"]))
+        if flags:
+            flag_text = " ".join(name for name, _ in flags)
+            customtkinter.CTkLabel(
+                row_frame, text=flag_text, font=self.log_font,
+                text_color=flags[0][1], width=flags_w, anchor="w",
+            ).grid(row=0, column=4, sticky="e", padx=(4, 8))
+        self.preview_rows.append({"check": check_var, "item": item, "name_label": name_label})
+
+    def _rebuild_preview_rows(self):
+        if not self.preview_plan:
+            return
+        if self.current_directory and os.path.isdir(self.current_directory):
+            self._show_preview(self.current_directory)
 
     def _save_preferences(self):
         self.settings["preferences"].update({
@@ -525,7 +697,7 @@ class AppGUI:
         filters_box.insert("1.0", f"extensions: {', '.join(filters.get('ignored_extensions', []))}\npatterns: {', '.join(filters.get('ignored_patterns', []))}\nfolders: {', '.join(filters.get('ignored_folders', []))}")
         hidden = tk.BooleanVar(value=filters.get("ignore_hidden", True))
         customtkinter.CTkCheckBox(dialog, text="Ignore hidden files", variable=hidden).pack(padx=12, pady=8, anchor="w")
-        customtkinter.CTkButton(dialog, text="SAVE & CLOSE", command=lambda: self._save_settings_dialog(dialog, working, rules_box, filters_box, hidden), fg_color=COLOR_PINK, hover_color="#C42A7A").pack(padx=12, pady=12, fill="x")
+        customtkinter.CTkButton(dialog, text="SAVE & CLOSE", command=lambda: self._save_settings_dialog(dialog, working, rules_box, filters_box, hidden), fg_color=self.p["accent"], hover_color=self.p["accent_soft"]).pack(padx=12, pady=12, fill="x")
 
     def _save_settings_dialog(self, dialog, settings, rules_box, filters_box, hidden):
         rules = {}
@@ -547,9 +719,20 @@ class AppGUI:
         report = generate_report(directory)
         dialog = customtkinter.CTkToplevel(self.root)
         dialog.title("Organization Report")
-        dialog.geometry("720x540")
+        dialog.geometry("820x620")
         dialog.transient(self.root)
         dialog.grab_set()
+
+        export_bar = customtkinter.CTkFrame(dialog, fg_color="transparent")
+        export_bar.pack(fill="x", padx=12, pady=(12, 0))
+        export_bar.grid_columnconfigure(0, weight=1)
+        customtkinter.CTkLabel(export_bar, text="Organization Report", font=self.main_font, anchor="w").grid(row=0, column=0, sticky="w")
+        csv_button = customtkinter.CTkButton(export_bar, text="Export CSV", command=lambda: self._export_report_csv(dialog, report), font=self.log_font, width=100, height=30, fg_color=self.p["panel"], hover_color=self.p["surface"], text_color=self.p["text"])
+        csv_button.grid(row=0, column=1, padx=(0, 8))
+        html_button = customtkinter.CTkButton(export_bar, text="Export HTML", command=lambda: self._export_report_html(dialog, report), font=self.log_font, width=100, height=30, fg_color=self.p["panel"], hover_color=self.p["surface"], text_color=self.p["text"])
+        html_button.grid(row=0, column=2)
+        Tooltip(csv_button, "Save the report as a CSV file.")
+        Tooltip(html_button, "Save an HTML page with the report.")
 
         summary = customtkinter.CTkFrame(dialog, fg_color="transparent")
         summary.pack(fill="x", padx=12, pady=(12, 8))
@@ -565,7 +748,12 @@ class AppGUI:
             customtkinter.CTkLabel(frame, text=value, font=self.main_font).pack(fill="x", padx=10, pady=(0, 8))
         summary.grid_columnconfigure((0, 1, 2), weight=1)
 
-        text_box = customtkinter.CTkTextbox(dialog, height=28, wrap="word", fg_color=COLOR_WIDGET_BG, border_color=COLOR_BORDER, text_color=COLOR_TEXT_WHITE)
+        bar_frame = customtkinter.CTkFrame(dialog, fg_color="transparent")
+        bar_frame.pack(fill="x", padx=12, pady=(0, 8))
+        customtkinter.CTkLabel(bar_frame, text="Most used categories", font=self.log_font, anchor="w").pack(anchor="w", pady=(0, 4))
+        self._render_report_bars(bar_frame, report)
+
+        text_box = customtkinter.CTkTextbox(dialog, wrap="word", height=180, fg_color=self.p["surface"], border_color=self.p["border"], text_color=self.p["text"])
         text_box.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         text_box.configure(state='normal')
 
@@ -607,6 +795,108 @@ class AppGUI:
         text_box.insert("1.0", "\n".join(lines))
         text_box.configure(state='disabled')
 
+    def _render_report_bars(self, parent, report):
+        canvas = tk.Canvas(parent, height=150, bg=self.p["panel"], highlightthickness=0)
+        canvas.pack(fill="x")
+        top = report["popular_categories"][:8]
+        if not top:
+            canvas.create_text(10, 10, anchor="nw", text="No categorised files yet.", fill=self.p["muted"], font=("Segoe UI", 10))
+            return
+        max_count = max(item["count"] for item in top) or 1
+        label_width = 160
+        available = canvas.winfo_width() - label_width - 60
+        bar_max_width = available if available > 100 else 500
+        row_height = 18
+        for index, item in enumerate(top):
+            y = 10 + index * row_height
+            canvas.create_text(10, y + 6, anchor="w", text=item["name"], fill=self.p["text"], font=("Segoe UI", 9))
+            bar_width = max(2, int((item["count"] / max_count) * bar_max_width))
+            color = self.p["accent"] if index == 0 else self.p["accent_soft"]
+            canvas.create_rectangle(label_width, y, label_width + bar_width, y + 12, fill=color, outline="")
+            canvas.create_text(label_width + bar_width + 6, y + 6, anchor="w", text=str(item["count"]), fill=self.p["muted"], font=("Segoe UI", 9))
+
+    def _export_report_csv(self, dialog, report):
+        import csv
+        path = filedialog.asksaveasfilename(parent=dialog, title="Export report as CSV", defaultextension=".csv", filetypes=[("CSV files", "*.csv")], initialfile="report.csv")
+        if not path:
+            return
+        counts = {item["name"]: item["count"] for item in report["popular_categories"]}
+        size_map = {item["name"]: item for item in report["space_by_category"]}
+        with open(path, "w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["FLCL File Organizer - Report"])
+            writer.writerow(["Files organized", report["organized_files"]])
+            writer.writerow(["Errors", len(report["errors"])])
+            writer.writerow([])
+            writer.writerow(["Category", "Files", "Size (bytes)", "Size (human)"])
+            for name, count in counts.items():
+                size = size_map.get(name, {"size_bytes": 0, "size_human": "0 B"})
+                writer.writerow([name, count, size["size_bytes"], size["size_human"]])
+            writer.writerow([])
+            writer.writerow(["Timestamp", "Files", "Names"])
+            for entry in report["recent_history"]:
+                writer.writerow([entry.get("timestamp", "unknown"), entry.get("count", 0), "; ".join(entry.get("files", []))])
+        messagebox.showinfo("Export", f"Report saved to:\n{path}")
+
+    def _export_report_html(self, dialog, report):
+        path = filedialog.asksaveasfilename(parent=dialog, title="Export report as HTML", defaultextension=".html", filetypes=[("HTML files", "*.html"), ("All files", "*.*")], initialfile="report.html")
+        if not path:
+            return
+        counts = {item["name"]: item["count"] for item in report["popular_categories"]}
+        size_map = {item["name"]: item["size_human"] for item in report["space_by_category"]}
+        names = sorted({*counts.keys(), *size_map.keys()})
+        max_count = max(counts.values()) if counts else 1
+        rows = []
+        for name in names:
+            width = int((counts.get(name, 0) / max_count) * 100)
+            rows.append(
+                f'<div class="cat"><span>{name}</span><div class="bar"><div class="fill" style="width:{width}%"></div></div>'
+                f'<span class="count">{counts.get(name, 0)} file(s) · {size_map.get(name, "0 B")}</span></div>'
+            )
+        errors = "".join(f"<li>{error}</li>" for error in report["errors"][:20]) or "<li>No recorded errors</li>"
+        history = "".join(
+            f"<li>{entry.get('timestamp', 'unknown')} — {entry.get('count', 0)} file(s) [{', '.join(entry.get('files', []))}]</li>"
+            for entry in report["recent_history"][:20]
+        ) or "<li>No recorded operations</li>"
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FLCL File Organizer - Report</title>
+<style>
+body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #101418; color: #E8EEF7; margin: 24px; }}
+h1 {{ color: {self.p["accent"]}; }}
+.metrics {{ display: flex; gap: 16px; flex-wrap: wrap; margin: 16px 0; }}
+.metric {{ background: #20262C; border: 1px solid #343C44; border-radius: 8px; padding: 12px 20px; }}
+.metric b {{ display: block; font-size: 20px; }}
+.cat {{ display: flex; align-items: center; gap: 12px; margin: 6px 0; }}
+.cat > span:first-child {{ min-width: 160px; }}
+.bar {{ flex: 1; background: #20262C; border-radius: 6px; height: 14px; }}
+.fill {{ height: 14px; border-radius: 6px; background: {self.p["accent"]}; }}
+.count {{ min-width: 160px; color: #A9B4C0; }}
+h2 {{ margin-top: 24px; color: {self.p["warning"]}; }}
+ul {{ background: #181C20; padding: 12px 24px; border-radius: 8px; }}
+</style>
+</head>
+<body>
+<h1>FLCL File Organizer</h1>
+<div class="metrics">
+<div class="metric">Files organized<b>{report["organized_files"]}</b></div>
+<div class="metric">Top category<b>{report["popular_categories"][0]["name"] if report["popular_categories"] else "None"}</b></div>
+<div class="metric">Errors<b>{len(report["errors"])}</b></div>
+</div>
+<h2>Most used categories</h2>
+{''.join(rows) or '<p>No categorised files yet</p>'}
+<h2>Errors</h2>
+<ul>{errors}</ul>
+<h2>Recent operations</h2>
+<ul>{history}</ul>
+</body>
+</html>"""
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(html)
+        messagebox.showinfo("Export", f"Report saved to:\n{path}")
+
     def _close_window(self):
         if self.tray_var.get() and pystray:
             self.root.withdraw()
@@ -619,9 +909,26 @@ class AppGUI:
         self._shutdown()
 
     def _shutdown(self):
-        if self.monitor_thread and self.monitor_thread.is_alive(): self.stop_event.set()
-        if self.tray_icon: self.tray_icon.stop()
-        self.root.destroy()
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.stop_event.set()
+        if self._resize_job is not None:
+            try:
+                self.root.after_cancel(self._resize_job)
+            except tk.TclError:
+                pass
+        if self.tray_icon:
+            self.tray_icon.stop()
+        try:
+            self.root.quit()
+        except tk.TclError:
+            pass
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def start_action(self):
         directory = self.directory_path.get()
@@ -630,8 +937,30 @@ class AppGUI:
             return
         if self.monitor_thread and self.monitor_thread.is_alive():
             return
-        if self.recursive_var.get() and not messagebox.askyesno("Include subfolders", "Organize files inside all subfolders as well?"):
+        selected = self._selected_move_items()
+        if not selected:
+            messagebox.showinfo("Nothing to organize", "No files are selected to move. Uncheck rows to exclude them from the organization, then refresh the preview.")
             return
+        total_size = sum(item["size"] for item in selected)
+        categories = sorted({item["destination_folder"] for item in selected})
+        no_rule = [item for item in selected if not item["has_rule"]]
+        conflicts = [item for item in selected if item["conflict"]]
+        confirm_lines = [
+            f"Move {len(selected)} file(s) ({_format_size(total_size)}) into {len(categories)} category folder(s)?",
+        ]
+        if no_rule:
+            confirm_lines.append(f"Note: {len(no_rule)} file(s) have no matching rule and will go to 'Others'.")
+        if conflicts:
+            confirm_lines.append(f"Note: {len(conflicts)} file(s) will be renamed to avoid collisions.")
+        if self.recursive_var.get():
+            confirm_lines.append("Subfolders will be included.")
+        if not messagebox.askyesno("Confirm organization", "\n".join(confirm_lines)):
+            return
+
+        self.moved_count = 0
+        self.error_count = 0
+        self.moved_label.configure(text="Files moved: 0")
+        self.error_label.configure(text="Errors: 0")
 
         self._set_state("Scanning", "Scanning the selected folder for files to organize.")
         self.start_button.configure(state='disabled')
@@ -641,11 +970,13 @@ class AppGUI:
 
         self.stop_event.clear()
         self.pause_event.clear()
-        self.monitor_thread = threading.Thread(target=start_monitoring, args=(directory, self.stop_event, self._queue_log, self.pause_event, self.recursive_var.get()), daemon=True)
+        self.monitor_thread = threading.Thread(target=start_monitoring, args=(directory, self.stop_event, self._queue_log, self.pause_event, self.recursive_var.get()), kwargs={"excluded_paths": self._excluded_sources}, daemon=True)
         self.monitor_thread.start()
         self.root.after(250, self._refresh_monitoring_state)
 
     def _refresh_monitoring_state(self):
+        if self._shutting_down:
+            return
         if self.monitor_thread and self.monitor_thread.is_alive():
             self._set_state("Monitoring", "Monitoring is active and waiting for new files.")
             self.root.after(250, self._refresh_monitoring_state)
@@ -667,6 +998,8 @@ class AppGUI:
         self.root.after(100, self._wait_for_monitoring_stop)
 
     def _wait_for_monitoring_stop(self):
+        if self._shutting_down:
+            return
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.root.after(100, self._wait_for_monitoring_stop)
             return
