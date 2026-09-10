@@ -110,7 +110,9 @@ class AppGUI:
         self._excluded_sources = set()
         self.current_directory = ""
         self._preview_last_width = 0
+        self._resize_job = None
         self._measure_fontobj = None
+        self._shutting_down = False
         self.moved_count = 0
         self.error_count = 0
         self.pause_event = threading.Event()
@@ -261,7 +263,7 @@ class AppGUI:
         appearance.grid(row=9, column=0, sticky="ew", pady=(16, 0))
         theme_label = customtkinter.CTkLabel(appearance, text="Appearance:")
         theme_label.pack(side="left", padx=(0, 8))
-        self.theme_menu = customtkinter.CTkOptionMenu(appearance, values=["FLCL", "Neutral"], variable=self.theme_var, command=self._apply_theme)
+        self.theme_menu = customtkinter.CTkOptionMenu(appearance, values=["FLCL", "Neutral"], variable=self.theme_var, command=lambda choice: (self._apply_theme(choice), self._save_preferences()))
         self.theme_menu.pack(side="left")
         Tooltip(self.theme_menu, "Choose between the FLCL aesthetic and the dark neutral interface.")
 
@@ -325,7 +327,8 @@ class AppGUI:
             print("Warning: 'haruko.gif' not found.")
 
     def _animate_gif(self, frame_index):
-        if not self.gif_frames: return
+        if self._shutting_down or not self.gif_frames:
+            return
         frame = self.gif_frames[frame_index]
         self.gif_label.configure(image=frame)
         next_frame_index = (frame_index + 1) % len(self.gif_frames)
@@ -398,13 +401,14 @@ class AppGUI:
         if hasattr(self, "theme_menu"):
             self.theme_menu.configure(fg_color=palette["panel"], button_color=palette["panel"], button_hover_color=palette["surface"], text_color=palette["text"], dropdown_fg_color=palette["panel"], dropdown_hover_color=palette["surface"], dropdown_text_color=palette["text"])
         self._rebuild_preview_rows()
-        self._save_preferences()
 
     def _queue_log(self, message):
         """Queue worker messages so Tkinter is only updated on the UI thread."""
         self.log_queue.put(message)
 
     def _process_log_queue(self):
+        if self._shutting_down:
+            return
         try:
             while True:
                 message = self.log_queue.get_nowait()
@@ -540,6 +544,15 @@ class AppGUI:
         if abs(event.width - self._preview_last_width) < 20:
             return
         self._preview_last_width = event.width
+        if self._resize_job is not None:
+            try:
+                self.root.after_cancel(self._resize_job)
+            except tk.TclError:
+                pass
+        self._resize_job = self.root.after(60, self._debounced_preview_rerender)
+
+    def _debounced_preview_rerender(self):
+        self._resize_job = None
         if self.current_directory and os.path.isdir(self.current_directory):
             self._show_preview(self.current_directory)
 
@@ -896,9 +909,26 @@ ul {{ background: #181C20; padding: 12px 24px; border-radius: 8px; }}
         self._shutdown()
 
     def _shutdown(self):
-        if self.monitor_thread and self.monitor_thread.is_alive(): self.stop_event.set()
-        if self.tray_icon: self.tray_icon.stop()
-        self.root.destroy()
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.stop_event.set()
+        if self._resize_job is not None:
+            try:
+                self.root.after_cancel(self._resize_job)
+            except tk.TclError:
+                pass
+        if self.tray_icon:
+            self.tray_icon.stop()
+        try:
+            self.root.quit()
+        except tk.TclError:
+            pass
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def start_action(self):
         directory = self.directory_path.get()
@@ -945,6 +975,8 @@ ul {{ background: #181C20; padding: 12px 24px; border-radius: 8px; }}
         self.root.after(250, self._refresh_monitoring_state)
 
     def _refresh_monitoring_state(self):
+        if self._shutting_down:
+            return
         if self.monitor_thread and self.monitor_thread.is_alive():
             self._set_state("Monitoring", "Monitoring is active and waiting for new files.")
             self.root.after(250, self._refresh_monitoring_state)
@@ -966,6 +998,8 @@ ul {{ background: #181C20; padding: 12px 24px; border-radius: 8px; }}
         self.root.after(100, self._wait_for_monitoring_stop)
 
     def _wait_for_monitoring_stop(self):
+        if self._shutting_down:
+            return
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.root.after(100, self._wait_for_monitoring_stop)
             return
