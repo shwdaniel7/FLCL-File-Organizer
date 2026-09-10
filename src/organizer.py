@@ -29,7 +29,7 @@ def history_path():
     return os.path.join(data_dir, "FLCL-File-Organizer", "history.json")
 
 def user_config_path():
-    data_dir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.flcl-file-organizer")
+    data_dir = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~/.flcl-file-organizer")
     return os.path.join(data_dir, "FLCL-File-Organizer", "config.json")
 
 def _backup_corrupt_file(file_path):
@@ -342,10 +342,11 @@ def _wait_for_stable_file(file_path, checks=3, interval=0.5, timeout=30):
 def _unique_destination_path(destination_path, reserved=None):
     """Return a non-conflicting path using the `name (n).ext` convention.
 
-    `reserved` may be a set of paths already claimed by an in-progress plan,
+    ``reserved`` may be a set of paths already claimed by an in-progress plan,
     so collisions are detected against the plan, not only live disk state.
     """
-    reserved = {os.path.normcase(path) for path in (reserved or set())}
+    reserved = {os.path.normcase(p) for p in (reserved or set())}
+
     def _is_available(candidate):
         return not os.path.exists(candidate) and os.path.normcase(candidate) not in reserved
 
