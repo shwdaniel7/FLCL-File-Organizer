@@ -1,5 +1,3 @@
-import os
-import tempfile
 import unittest
 
 from src.organizer import _get_file_extension, _classify_file

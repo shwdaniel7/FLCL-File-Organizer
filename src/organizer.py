@@ -258,6 +258,9 @@ def _default_settings():
             "autostart": False,
             "minimize_to_tray": False,
             "last_folder": "",
+            "theme": "FLCL",
+            "reduce_motion": False,
+            "sidebar_collapsed": False,
         },
         "filters": {
             "ignored_folders": [],
@@ -344,11 +347,17 @@ def _unique_destination_path(destination_path, reserved=None):
 
     ``reserved`` may be a set of paths already claimed by an in-progress plan,
     so collisions are detected against the plan, not only live disk state.
+    Store them ``os.path.normcase``d to also catch case-only collisions; the set
+    is checked as-is so large plans stay linear.
     """
-    reserved = {os.path.normcase(p) for p in (reserved or set())}
+    reserved = reserved or set()
 
     def _is_available(candidate):
-        return not os.path.exists(candidate) and os.path.normcase(candidate) not in reserved
+        return (
+            not os.path.exists(candidate)
+            and os.path.normcase(candidate) not in reserved
+            and candidate not in reserved
+        )
 
     if _is_available(destination_path):
         return destination_path
@@ -394,6 +403,35 @@ def _safe_move(source_path, destination_path):
 def load_rules():
     """Load organization rules from the application resources."""
     return load_settings()["rules"]
+
+_INVALID_NAME_CHARS = set('<>:"/\\|?*')
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
+
+def normalize_extension(text):
+    """Return a lowercase `.ext` for user input, or None when it cannot be a file suffix."""
+    extension = (text or "").strip().lower()
+    if not extension:
+        return None
+    if not extension.startswith("."):
+        extension = "." + extension
+    if extension.strip(".") == "" or any(char in _INVALID_NAME_CHARS or char.isspace() for char in extension):
+        return None
+    return extension
+
+def category_name_error(name, existing=()):
+    """Explain why ``name`` cannot be a category folder, or return None when it is valid."""
+    name = (name or "").strip()
+    if not name:
+        return "Category name is required."
+    if any(char in _INVALID_NAME_CHARS for char in name) or name in (".", ".."):
+        return f"'{name}' contains characters Windows does not allow in folder names."
+    if name.endswith("."):
+        return f"'{name}' cannot end with a dot."
+    if name.split(".")[0].upper() in _RESERVED_NAMES:
+        return f"'{name}' is a reserved Windows name."
+    if name.casefold() in {item.casefold() for item in existing}:
+        return f"A category named '{name}' already exists."
+    return None
 
 def _classify_file(filename, rules):
     extension = _get_file_extension(filename, rules)
@@ -477,7 +515,7 @@ def build_preview(monitored_dir, rules=None, filters=None, recursive=False):
         destination_dir = os.path.join(monitored_dir, destination_folder)
         base_destination = os.path.join(destination_dir, item_name)
         destination_path = _unique_destination_path(base_destination, reserved=reserved_destinations)
-        reserved_destinations.add(destination_path)
+        reserved_destinations.add(os.path.normcase(destination_path))
         preview.append({
             "filename": item_name,
             "extension": extension,
@@ -622,7 +660,7 @@ def start_monitoring(directory, stop_event, log_callback, pause_event=None, recu
     observer = Observer()
     observer.schedule(event_handler, directory, recursive=recursive)
     observer.start()
-    log_callback(f"Real-time monitoring started. Waiting for new files...")
+    log_callback("Real-time monitoring started. Waiting for new files...")
 
     try:
         while not stop_event.is_set():

@@ -93,7 +93,7 @@ class UndoLastRunTests(UndoIsolatedAppDataTestCase):
     def test_occupied_original_keeps_move_in_history(self):
         with tempfile.TemporaryDirectory() as monitored:
             original = os.path.join(monitored, "a.jpg")
-            moves = self._run_scan(monitored, ["a.jpg"])
+            self._run_scan(monitored, ["a.jpg"])
             self._write_file(original, "new occupant")
             logs = []
             result = organizer.undo_last_run(logs.append)
