@@ -42,6 +42,8 @@ SIDEBAR_WIDTH = {False: 236, True: 76}
 NARROW_WIDTH = 1060
 SHORT_HEIGHT = 700
 GIF_BOX = (190, 240)
+# states with their own animation; every other state uses assets/haruko.gif
+STATE_GIFS = {"Idle": "haruko_idle", "Scanning": "haruko_scanning", "Error": "samejima_error"}
 GLOW_PULSES = 3
 
 
@@ -93,6 +95,7 @@ class AppGUI:
         self.page = "organize"
         self.pages = {}
         self.page_frames = {}
+        self._gif_cache = {}
         self.gif_frames = []
         self.gif_duration = 100
         self.gif_index = 0
@@ -112,7 +115,7 @@ class AppGUI:
         theme.apply(self.theme_name)
         self.root.configure(fg_color=theme.current["window"])
         self._setup_window_icon()
-        self._load_gif_frames()
+        self._use_state_gif()
         self.toasts = ToastManager(root)
         self.tray = TrayIcon(root, self._shutdown)
 
@@ -141,21 +144,35 @@ class AppGUI:
         except tk.TclError as error:
             print(f"Warning: Could not load window icon: {error}")
 
-    def _load_gif_frames(self):
+    def _load_gif_frames(self, name="haruko"):
+        """Return (frames, duration) for assets/<name>.gif, cached; ([], 100) if unreadable."""
+        if name in self._gif_cache:
+            return self._gif_cache[name]
+        frames, duration = [], 100
         try:
-            with Image.open(resource_path("assets/haruko.gif")) as gif:
+            with Image.open(resource_path(f"assets/{name}.gif")) as gif:
                 ratio = min(GIF_BOX[0] / gif.width, GIF_BOX[1] / gif.height)
                 size = (round(gif.width * ratio), round(gif.height * ratio))
-                self.gif_duration = gif.info.get("duration", 100) or 100
+                duration = gif.info.get("duration", 100) or 100
                 corners = Image.new("L", gif.size, 0)
                 ImageDraw.Draw(corners).rounded_rectangle((0, 0, gif.width - 1, gif.height - 1), radius=round(theme.RADIUS["lg"] / ratio), fill=255)
                 for index in range(gif.n_frames):
                     gif.seek(index)
                     frame = gif.convert("RGBA")
                     frame.putalpha(corners)
-                    self.gif_frames.append(customtkinter.CTkImage(light_image=frame, dark_image=frame, size=size))
+                    frames.append(customtkinter.CTkImage(light_image=frame, dark_image=frame, size=size))
         except OSError:
-            print("Warning: 'assets/haruko.gif' could not be loaded.")
+            print(f"Warning: 'assets/{name}.gif' could not be loaded.")
+        self._gif_cache[name] = (frames, duration)
+        return frames, duration
+
+    def _use_state_gif(self):
+        """Switch to the state's own GIF, falling back to the default Haruko if it is missing."""
+        frames, duration = self._load_gif_frames(STATE_GIFS.get(self.state, "haruko"))
+        if not frames:
+            frames, duration = self._load_gif_frames("haruko")
+        if frames is not self.gif_frames:
+            self.gif_frames, self.gif_duration, self.gif_index = frames, duration, 0
 
     # --- layout ----------------------------------------------------------
 
@@ -351,6 +368,7 @@ class AppGUI:
     def _set_state(self, state, hint):
         self.state = state
         self.hint = hint
+        self._use_state_gif()
         self._render_state()
         self._sync_controls()
 
@@ -794,9 +812,9 @@ class AppGUI:
             return
         if self.gif_label.winfo_ismapped():
             self.gif_label.configure(image=self.gif_frames[self.gif_index])
-        if self.state not in ("Paused", "Error") and not self.animator.reduce_motion:
+        if self.state != "Paused" and not self.animator.reduce_motion:
             self.gif_index = (self.gif_index + 1) % len(self.gif_frames)
-        speed = 0.55 if self.state in ("Scanning", "Undoing") else 1.0
+        speed = 0.55 if self.state == "Undoing" else 1.0
         self._gif_job = self.root.after(max(20, int(self.gif_duration * speed)), self._animate_gif)
 
     def _close_window(self):
